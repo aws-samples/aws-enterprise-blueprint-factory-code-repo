@@ -1,0 +1,716 @@
+Transform:
+  - ReplicateWith
+
+Parameters:
+  ProductName:
+    Type: String
+  CodeCommitRepoName:
+    Type: String
+    Description: 'Name of the CodeCommit repository'
+    Default: "ServiceCatalog-BlueprintProductRepo"
+  CodeCommitBranchName:
+    Type: String
+    Default: 'main'
+    Description: 'Name of the branch in the CodeCommit repository to use as source'
+  DeploymentBucketName:
+    Default: '/blueprints/resources/artifacts-bucket-name'
+    Type: 'AWS::SSM::Parameter::Value<String>'
+  VpcId:
+    Default: '/blueprints/resources/vpc_id'
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Description: VPC ID of your existing Virtual Private Cloud (VPC)
+  SubnetIds:
+    Default: '/blueprints/resources/subnets'
+    Type: 'AWS::SSM::Parameter::Value<List<String>>'
+    Description: The list of Subnet IDs in your Virtual Private Cloud (VPC) 
+  SecurityGroupIds:
+    Description: CBA Security Group Provides access to CICD resources like Artifactory, GHE, and proxies
+    Type: 'AWS::SSM::Parameter::Value<List<String>>'
+    Default: '/blueprints/resources/securitygroups'
+  PipelineName:
+    Type: String
+    Description: 'Name of the CodePipeline to create'
+    Default: BluePrint_${ProductName}-${AWS::StackName}
+  VersionStrategy:
+    Default: Mutable
+    Type: String
+    Description: Versioning Strategy to follow
+    AllowedValues: [Immutable,Mutable]  
+  ArtifactBucket:
+    Default: '/blueprints/resources/artifacts-bucket-name'
+    Type: 'AWS::SSM::Parameter::Value<String>'
+  ProductConfigFile:
+    Description: Path to Service Catalog Product Config file
+    Type: String
+  ProductOwner:
+    Type: String
+    MaxLength: '8191' 
+  ProductDescription:
+    Type: String
+    MaxLength: '8191' 
+  PortfolioIds:
+    Description: Comma separated existing Service Catalog Portfolio Ids
+    Type: String
+    MaxLength: '8191'
+  BlueprintType:
+    Default: Cloudformation
+    Type: String
+    Description: Type of Blueprint, valid values are Cloudformation or CDK
+    AllowedValues: [Cloudformation,CDK]
+  EnvironmentType:
+    Type: String
+    Default: DEV
+    AllowedValues:
+      - DEV
+      - NONPROD
+      - PROD    
+
+Conditions:
+  IsCDKBlueprint: 
+    Fn::Equals:
+    - Ref: BlueprintType
+    - CDK
+
+Resources:
+  CodeBuildProjectLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 365
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+  CodeBuildProjectRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action: sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service: codebuild.amazonaws.com
+        Version: '2012-10-17'
+  CodePipelineServiceRole:
+      Type: AWS::IAM::Role  
+      Properties:
+        Path: /
+        AssumeRolePolicyDocument: 
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - codepipeline.amazonaws.com
+              Action:
+                - 'sts:AssumeRole'
+        Policies:
+          - PolicyName: !Sub "CodePipeline-${ProductName}-${AWS::StackName}"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - servicecatalog:UpdateProduct
+                    - servicecatalog:CreateProvisioningArtifact
+                    - servicecatalog:List*
+                    - servicecatalog:Describe*
+                    - servicecatalog:CreateProduct
+                    - servicecatalog:Tag*
+                    - servicecatalog:Untag*
+                    - servicecatalog:DeletePortfolio
+                    - servicecatalog:DeleteProduct
+                    - servicecatalog:DeleteProvisioningArtifact
+                    - servicecatalog:AssociateProductWithPortfolio
+                    - servicecatalog:CreateConstraint                    
+                  Resource: 
+                    - !Sub arn:aws:catalog:${AWS::Region}:${AWS::AccountId}:*
+                    - !Sub arn:aws:servicecatalog:${AWS::Region}:${AWS::AccountId}:*
+                - Effect: Deny # Deny Update to Immutable Products
+                  Action: 
+                    - servicecatalog:UpdateProvisioningArtifact
+                  Resource: 
+                    - !Sub arn:aws:catalog:${AWS::Region}:${AWS::AccountId}:*
+                    - !Sub arn:aws:servicecatalog:${AWS::Region}:${AWS::AccountId}:*
+                  Condition:
+                    StringNotEquals:
+                      aws:ResourceTag/VersionStrategy: Mutable                  
+                - Effect: Allow
+                  Action:
+                    - cloudformation:CreateChangeSet
+                    - cloudformation:CreateStack
+                    - cloudformation:CreateUploadBucket
+                    - cloudformation:DeleteStack
+                    - cloudformation:Describe*
+                    - cloudformation:List*
+                    - cloudformation:UpdateStack
+                    - cloudformation:ExecuteChangeSet
+                  Resource: !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:*'
+                - Effect: Allow
+                  Action:
+                    - cloudformation:ValidateTemplate
+                  Resource: '*'
+                - Effect: Allow
+                  Action:
+                    - iam:ListRoles
+                    - codebuild:BatchGetBuilds
+                    - codebuild:StartBuild
+                    - codebuild:List*
+                    - codebuild:StopBuild
+                    - codebuild:Retry*
+                    - iam:Tag*
+                    - iam:Untag*
+                    - s3:ListAllMyBuckets
+                    - s3:GetBucketLocation
+                  Resource: 
+                    - !Sub arn:aws:iam::${AWS::AccountId}:*
+                    - !Sub arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:*
+                    - arn:aws:s3:::*
+                - Effect: Allow
+                  Action:
+                    - ec2:Describe*
+                  Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:*'
+                - Effect: Allow
+                  Action:
+                    - s3:PutObject
+                    - s3:GetBucketPolicy
+                    - s3:GetObject
+                    - s3:ListBucket
+                    - s3:PutObjectAcl
+                    - s3:GetObjectAcl
+                    - s3:GetBucketVersioning
+                  Resource:
+                    - !Sub "arn:aws:s3:::${ArtifactBucket}/*"
+                    - !Sub "arn:aws:s3:::${ArtifactBucket}"
+                - Effect: Allow
+                  Action:
+                    - codecommit:ListBranches
+                    - codecommit:GetReferences
+                    - codecommit:ListRepositories
+                    - 'codecommit:CancelUploadArchive'
+                    - 'codecommit:GetBranch'
+                    - 'codecommit:GetCommit'
+                    - 'codecommit:GetUploadArchiveStatus'
+                    - 'codecommit:UploadArchive'
+                  Resource:
+                    - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:ServiceCatalog-ConfigRepo'
+                    - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:ServiceCatalog-AdminProductRepo'
+                    - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:ServiceCatalog-CodeRepo'
+                    - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:ServiceCatalog-BlueprintProductRepo'
+  CodeBuildProjectPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyDocument:
+        Statement:
+        - Action:
+            - servicecatalog:Describe*
+            - servicecatalog:UpdateProvisioningArtifact
+          Effect: Allow
+          Resource:
+            - !Sub arn:aws:catalog:${AWS::Region}:${AWS::AccountId}:*
+            - !Sub arn:aws:servicecatalog:${AWS::Region}:${AWS::AccountId}:*
+        - Action:
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          Effect: Allow
+          Resource: !GetAtt CodeBuildProjectLogGroup.Arn
+        - Effect: Allow
+          Action:
+            - ec2:CreateNetworkInterface
+            - ec2:Describe*
+          Resource: '*'
+        - Effect: Allow
+          Action:
+            - ec2:DeleteNetworkInterface
+          Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:*'
+        # - Effect: Allow
+        #   Action:
+        #     - iam:PassRole
+        #   Resource: '*'
+        #   Condition:
+        #     StringEqualsIfExists:
+        #       iam:PassedToService: 
+        #         - servicecatalog.amazonaws.com
+        - Effect: Allow
+          Action:
+            - "cloudformation:CreateChangeSet"
+            - "cloudformation:CreateStack"
+            - "cloudformation:CreateUploadBucket"
+            - "cloudformation:DeleteStack"
+            - "cloudformation:Describe*"
+            - "cloudformation:List*"
+            - "cloudformation:UpdateStack"
+            - "cloudformation:ValidateTemplate"
+            - "cloudformation:ExecuteChangeSet"
+          Resource: !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:*'
+        - Effect: Allow
+          Action:
+          - ec2:CreateNetworkInterfacePermission
+          Resource: !Sub "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*"
+          Condition:
+            StringEquals:
+              ec2:AuthorizedService: codebuild.amazonaws.com
+        - Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            - logs:DescribeLogGroups
+          Effect: Allow
+          Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+        - Action:
+            - iam:ListRoles
+            - iam:Get*
+            - iam:Tag*
+            - iam:Untag*
+            - ssm:Get*
+            - ssm:PutParameter
+            - secretsmanager:GetSecretValue
+            - ssm:Describe*
+          Effect: Allow
+          Resource: 
+            - !Sub 'arn:aws:iam::${AWS::AccountId}:*'
+            - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:*'
+            - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:*'
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetBucketPolicy
+            - s3:GetObject
+            - s3:ListBucket
+            - s3:PutObjectAcl
+            - s3:GetObjectAcl
+            - s3:GetBucketVersioning
+          Resource:
+            - !Sub "arn:aws:s3:::${ArtifactBucket}/*"
+            - !Sub "arn:aws:s3:::${ArtifactBucket}"
+        Version: '2012-10-17'
+      PolicyName: !Sub "CodeBuild-${ProductName}-${AWS::StackName}"
+      Roles:
+      - Ref: CodeBuildProjectRole
+
+  BuildstepCfnLintCheck:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildProjectPolicy
+    Properties:
+      Artifacts: 
+        Type: CODEPIPELINE
+      Description: Test all templates with cfn_lint
+      Environment: 
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        ImagePullCredentialsType: CODEBUILD
+      Name: !Sub '${ProductName}-BuildstepCfnLintCheck-${AWS::StackName}'
+      ServiceRole: !GetAtt CodeBuildProjectRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - echo "Installing cfn-lint"
+                - pip install cfn-lint
+            build:
+              commands:
+                - echo "Executing cfn-lint scan"
+                - |
+                  #!/usr/bin/env bash
+                  file_path=`echo ${ProductConfigFile} |xargs dirname`
+                  cd $file_path
+                  for file in *.yml; do
+                    echo $file
+                    cfn-lint -t $file || false
+                  done
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+      VpcConfig:
+          SecurityGroupIds: !Ref SecurityGroupIds
+          Subnets: !Ref SubnetIds
+          VpcId: !Ref VpcId
+
+  BuildstepCfnNagCheck:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildProjectPolicy
+    Properties:
+      Artifacts: 
+        Type: CODEPIPELINE
+      Description: Test all templates with cfn_nag
+      Environment: 
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        ImagePullCredentialsType: CODEBUILD
+      Name: !Sub '${ProductName}-BuildstepCfnNagCheck-${AWS::StackName}'
+      ServiceRole: !GetAtt CodeBuildProjectRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - echo "Installing cfn-nag"
+                - pip install cfn-lint
+                - apt-get install jq git -y -q
+                - gem install cfn-nag
+            build:
+              commands:
+                - echo "Executing cfn-nag scan"
+                - |
+                  #!/usr/bin/env bash
+                  file_path=`echo ${ProductConfigFile} |xargs dirname`
+                  cd $file_path
+                  for file in *.yml; do
+                    echo $file
+                    cfn_nag_scan -i $file || false
+                  done
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+      VpcConfig:
+          SecurityGroupIds: !Ref SecurityGroupIds
+          Subnets: !Ref SubnetIds
+          VpcId: !Ref VpcId
+
+
+  BuildstepPackage:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildProjectPolicy
+    Properties:
+      Artifacts: 
+        Type: CODEPIPELINE
+      Description: CloudFormation Package
+      Environment: 
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        ImagePullCredentialsType: CODEBUILD
+        EnvironmentVariables:
+          - Name: ARTIFACT_BUCKET
+            Value: !Ref ArtifactBucket
+          - Name: PRODUCT_NAME
+            Value: !Ref ProductName
+          - Name: PRODUCT_VERSION_STRATEGY
+            Value: !Ref VersionStrategy
+      Name: !Sub '${ProductName}-BuildstepCfnPackage-${AWS::StackName}'
+      ServiceRole: !GetAtt CodeBuildProjectRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+            exported-variables:
+              - PRODUCT_VERSION
+              - PRODUCT_VERSION_DESCRIPTION
+              - PRODUCT_TEMPLATE
+              - SSM_PRODUCT_PREFIX
+          phases:
+            install:
+              commands:
+                - #!/bin/bash
+            pre_build:
+              commands:
+                - find .
+                - export PRODUCT_VERSION=$(cat ${ProductConfigFile} | jq -r .ProductVersionName)
+                - echo "Product Version is $PRODUCT_VERSION"
+                - export PRODUCT_VERSION_DESCRIPTION=$(cat ${ProductConfigFile} | jq -r .ProductVersionDescription)
+                - echo "Product Version Description is $PRODUCT_VERSION_DESCRIPTION"
+                - export PRODUCT_TEMPLATE=$(cat ${ProductConfigFile} | jq -r .Properties.TemplateFilePath)
+                - echo "Product Template is $PRODUCT_TEMPLATE"
+                - export SSM_PRODUCT_PREFIX="/blueprints/service-catalog/${EnvironmentType}/BlueprintProduct"
+            build:
+              commands:
+                - #!/bin/bash
+                - |
+                  if [[ $PRODUCT_VERSION_STRATEGY == "Mutable" ]];
+                  then
+                    echo "Product Version Strategy is $PRODUCT_VERSION_STRATEGY and the Product Version that'll be deployed is $PRODUCT_VERSION"
+                  elif [[ $PRODUCT_VERSION_STRATEGY == "Immutable" ]];
+                  then
+                    ## Check if the product version already exist
+                    aws ssm get-parameter --name "$SSM_PRODUCT_PREFIX/$PRODUCT_NAME/$PRODUCT_VERSION/product-version-id"  > /dev/null
+                    if [ $? -eq 0 ];
+                    then
+                      echo "Product Version Strategy is set as $PRODUCT_VERSION_STRATEGY but the Product Version $PRODUCT_VERSION already exist"
+                      echo "Please update the Product Version or change the Product Version Strategy in order to proceed"
+                      echo "Process Exiting now..."
+                      EXITCODE=1
+                      exit $EXITCODE
+                    else
+                      echo "Product Version doesn't exist, good to proceed"
+                    fi;
+                  fi;
+                  ## cloudformation package
+                  aws cloudformation package --template-file $PRODUCT_TEMPLATE --s3-bucket $ARTIFACT_BUCKET --s3-prefix resource/$PRODUCT_NAME/$PRODUCT_VERSION/ --output-template-file packaged.yml
+                  echo "Cloudformation package complete..."
+          artifacts:
+            files:
+              - packaged.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+      VpcConfig:
+          SecurityGroupIds: !Ref SecurityGroupIds
+          Subnets: !Ref SubnetIds
+          VpcId: !Ref VpcId
+
+  BuildstepUpdateVersion:
+    Type: AWS::CodeBuild::Project
+    DependsOn: BuildstepPackage
+    Properties:
+      Artifacts: 
+        Type: CODEPIPELINE
+      Description: Update Product Version
+      Environment: 
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        ImagePullCredentialsType: CODEBUILD
+        EnvironmentVariables:
+          - Name: PRODUCT_ID
+            Value: !Ref ServiceCatalogProduct
+          - Name: PRODUCT_NAME
+            Value: !Ref ProductName
+      Name: !Sub '${ProductName}-BuildstepUpdateVersion-${AWS::StackName}'
+      ServiceRole: !GetAtt CodeBuildProjectRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+          phases:
+            build:
+              commands:
+                - #!/bin/bash
+                - |
+                  ## Add ssm product version id parameter
+                  aws ssm put-parameter --name "$SSM_PRODUCT_PREFIX/$PRODUCT_NAME/$PRODUCT_VERSION/product-version-id" --value $PRODUCT_VERSION --type "String"
+                  echo "Adding product version id: $PRODUCT_VERSION to ssm product version id parameter $SSM_PRODUCT_PREFIX/$PRODUCT_NAME/$PRODUCT_VERSION/product-version-id"
+
+                  ## Deprecate product versions listed in the config
+                  for pv in `aws servicecatalog describe-product-as-admin --id $PRODUCT_ID | jq -r '.ProvisioningArtifactSummaries[] | {Id, Name} | join(":")'`; 
+                  do
+                    VersionId=`echo $pv | cut -d ":" -f1`
+                    VersionName=`echo $pv | cut -d ":" -f2`
+                    for version in $(cat ${ProductConfigFile} | jq -r '.Deprecated_Versions[]');
+                    do
+                      if [[ $VersionName == $version ]];
+                      then
+                          aws servicecatalog update-provisioning-artifact --product-id $PRODUCT_ID --provisioning-artifact-id $VersionId --no-active
+                          echo "Deprecated product version $VersionId"
+                      fi
+                    done;
+                  done;
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+      VpcConfig:
+          SecurityGroupIds: !Ref SecurityGroupIds
+          Subnets: !Ref SubnetIds
+          VpcId: !Ref VpcId
+
+  BuildstepCDKSynth:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildProjectPolicy
+    Properties:
+      Artifacts: 
+        Type: CODEPIPELINE
+      Description: CloudFormation Package
+      Environment: 
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        ImagePullCredentialsType: CODEBUILD
+      Name: !Sub '${ProductName}-BuildstepCDKSynth'
+      ServiceRole: !GetAtt CodeBuildProjectRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                python: 3.9
+            build:
+              commands:
+                - DIR=`echo ${ProductConfigFile} |xargs dirname`
+                - cd $DIR
+                - npm ci
+                - npm run build
+                - npm install aws-cdk@1.133.0
+                - npx cdk synth >> template.yaml
+          artifacts:
+            files:
+              - '**/*'
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+      VpcConfig:
+          SecurityGroupIds: !Ref SecurityGroupIds
+          Subnets: !Ref SubnetIds
+          VpcId: !Ref VpcId
+
+
+  Pipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      ArtifactStore:
+        Type: S3
+        Location: !Ref DeploymentBucketName
+      Name: !Sub BluePrint_${ProductName}-${AWS::StackName}
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: '1'
+              Configuration:
+                RepositoryName: !Ref CodeCommitRepoName
+                BranchName: !Ref CodeCommitBranchName
+              OutputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+        - !If
+          - IsCDKBlueprint
+          - Name: Synth
+            Actions:
+              - Name: Synth
+                ActionTypeId:
+                  Category: Build
+                  Owner: AWS
+                  Provider: CodeBuild
+                  Version: '1'
+                OutputArtifacts:
+                  - Name: CDKOutput
+                Configuration:
+                  ProjectName: !Ref BuildstepCDKSynth
+                  PrimarySource: SourceOutput
+                InputArtifacts:
+                  - Name: SourceOutput
+                RunOrder: 3
+          - !Ref AWS::NoValue
+        - Name: Checks-CfnLint
+          Actions: 
+            - Name: CfnLintCheck
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref BuildstepCfnLintCheck
+                PrimarySource: SourceOutput
+              InputArtifacts: 
+                - Name: SourceOutput
+              RunOrder: 1 
+        - Name: Checks-CfnNag
+          Actions: 
+            - Name: CfnNagCheck
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref BuildstepCfnNagCheck
+                PrimarySource: SourceOutput
+              InputArtifacts: 
+                - Name: SourceOutput
+              RunOrder: 1 
+        - Name: Package
+          Actions:
+            - Name: CloudFormationPackage
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Namespace: PackageVars                
+              InputArtifacts: 
+                - Name: SourceOutput
+              Configuration:
+                ProjectName: !Ref BuildstepPackage
+                PrimarySource: SourceOutput
+                # VpcConfig:
+                #   SecurityGroupIds: !Ref SecurityGroupIds
+                #   Subnets: !Ref SubnetIds
+              OutputArtifacts:
+                - Name: PrimaryTemplate
+              RunOrder: 1
+        - Name: Deploy
+          Actions:    
+            - Name: ServiceCatalogDeploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: ServiceCatalog
+                Version: 1
+              Configuration:
+                TemplateFilePath: packaged.yml
+                ProductVersionName: '#{PackageVars.PRODUCT_VERSION}'
+                ProductVersionDescription: '#{PackageVars.PRODUCT_VERSION_DESCRIPTION}'
+                ProductType: CLOUD_FORMATION_TEMPLATE
+                ProductId: !Ref ServiceCatalogProduct
+              InputArtifacts:
+                - Name: PrimaryTemplate
+        - Name: UpdateVersion
+          Actions: 
+            - Name: UpdateProductVersion
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref BuildstepUpdateVersion
+                EnvironmentVariables: !Sub '[{"name":"SSM_PRODUCT_PREFIX","value":"#{PackageVars.SSM_PRODUCT_PREFIX}","type":"PLAINTEXT"},{"name":"PRODUCT_VERSION","value":"#{PackageVars.PRODUCT_VERSION}","type":"PLAINTEXT"}]'
+                PrimarySource: 
+                  !If
+                    - IsCDKBlueprint
+                    - CDKOutput
+                    - SourceOutput              
+              InputArtifacts:
+                - !If
+                  - IsCDKBlueprint
+                  - Name: CDKOutput
+                  - Name: SourceOutput
+
+
+  ServiceCatalogProduct:
+    Type: AWS::ServiceCatalog::CloudFormationProduct
+    Properties: 
+      Description: !Ref ProductDescription
+      Name: !Ref ProductName
+      Owner: !Ref ProductOwner
+      ProvisioningArtifactParameters: 
+        - Description: 'Initial empty product template'
+          Info: 
+            # We need to use a neutral / empty template for the initial version as CodePipeline creates new Product versions, 
+            # not the product itself, and to create a product you need an initial artifact, but we dont have an initial artifact yet as
+            # the product has to exist before the pipeline so that the pipeline can refer to the productId.
+            LoadTemplateFromURL: !Sub "https://${ArtifactBucket}.s3.${AWS::Region}.amazonaws.com/empty_cfn.yaml"
+          DisableTemplateValidation: true
+          Name: '0.0.0' 
+      Tags:
+        - Key: VersionStrategy
+          Value: !Ref VersionStrategy          
+
+  BlueprintProductIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Name: !Sub "/blueprints/service-catalog/DEV/BlueprintProduct/${ProductName}/product-id"
+      Value: !Ref ServiceCatalogProduct
+      Description: ID of the service catalog blueprint product
+  
+  AssociateProduct:
+    Type: AWS::ServiceCatalog::PortfolioProductAssociation
+    Properties:
+      ReplicateWith:
+        PortfolioId: PortfolioIds
+      ProductId: !Ref ServiceCatalogProduct

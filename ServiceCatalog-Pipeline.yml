@@ -1,0 +1,845 @@
+Parameters:
+  RepositoryName:
+    Type: String
+    Default: ServiceCatalog-ConfigRepo
+  BranchName:
+    Type: String
+    Default: main
+  VPCID:
+    Default: '/blueprints/resources/vpc_id'
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Description: VPC ID of your existing Virtual Private Cloud (VPC)
+  # SecurityGroupID:
+  #   Type: List<AWS::EC2::SecurityGroup::Id>
+  #   Default: '/blueprints/resources/securitygroups'
+  Subnets:
+    Default: '/blueprints/resources/subnets'
+    Type: 'AWS::SSM::Parameter::Value<List<String>>'
+  SecurityGroupIds:
+    Type: 'AWS::SSM::Parameter::Value<List<String>>'
+    Default: '/blueprints/resources/securitygroups'
+  IamRoleName:
+    Type: String
+    Default: codebuild-servicecatalog-admin-role
+  EnvironmentType:
+    Type: String
+    Default: DEV
+    AllowedValues:
+      - DEV
+      - NONPROD
+      - PROD    
+  ArtifactBucket:
+    Default: '/blueprints/resources/artifacts-bucket-name'
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    ConstraintDescription: 3-63 characters; must contain only lowercase letters or numbers
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups: 
+      - 
+        Label: 
+          default: "CodeCommit repository"
+        Parameters: 
+          - RepositoryName
+          - BranchName
+      - 
+        Label: 
+          default: "CodeBuild job"
+        Parameters: 
+          - EnvironmentType
+          - VPCID
+          - Subnets
+          - SecurityGroupIds  
+          - IamRoleName
+          - ArtifactBucket
+          - ArtifactKmsKeyID
+    ParameterLabels:
+      RepositoryName:
+        default: Configuration Repository name
+      BranchName:
+        default: Configuration Repository branch name
+      VPCID:
+        default: VPC
+      Subnets:
+        default: Subnets
+      SecurityGroupIds:
+        default: Security Group
+      IamRoleName:
+        default: CodeBuild Service Role Name
+      ArtifactBucket:
+        default: Artifact S3 bucket
+Resources:
+  rTransformExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+        - PolicyName: LogPermissionsForLambda
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:Describe*
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ec2:DeleteNetworkInterface
+                Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:*'
+  rTransformFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-replication-macro
+      MemorySize: 128
+      Timeout: 30
+      VpcConfig:
+        SecurityGroupIds: !Ref SecurityGroupIds
+        SubnetIds:
+          - !Select [ 0, !Ref Subnets ]
+      Code:
+        ZipFile: |
+          import boto3
+          import copy
+          import json
+          import logging
+
+          log = logging.getLogger()
+          log.setLevel(logging.INFO)
+
+          DEFAULT_KEYWORD = 'ReplicateWith'
+
+          def process_template(event):
+              """
+              Creates identical resources iteratively with one unique resource property
+              """
+              try:
+                fragment = event['fragment']
+                final_fragment = copy.deepcopy(fragment)
+                parameters = event['templateParameterValues']
+                resources = fragment['Resources']
+                for resource_name, resource_values in resources.items():
+                    current_resource = resources[resource_name]
+                    log.info('Current Resource:: ' + str(current_resource))
+                    if DEFAULT_KEYWORD in resource_values['Properties']:
+                        log.info('Resource_name:: ' + str(resource_name))
+                        log.info('Resource_value:: ' + str(resource_values))
+
+                        # Move to a different block
+                        for key, value in resource_values['Properties'][DEFAULT_KEYWORD].items():
+                            log.debug('Replicate Key:: ' + key)
+                            log.debug('Replicate Value:: ' + value)
+
+                            #Split the comma separated properties
+                            resource_properties = parameters[value].split(',')
+                            log.debug('New Properties:: ' + str(resource_properties))
+
+                            #Pop the DEFAULT_KEYWORD
+                            resource_values['Properties'].pop(DEFAULT_KEYWORD)
+                            length_resource_properties = len(resource_properties)
+                            log.debug('length of properties:: ' + str(length_resource_properties))
+
+                            # Duplicating resources with unique property values
+                            if length_resource_properties > 0:
+                                get_final_fragment(length_resource_properties, resource_name, resource_properties, final_fragment, current_resource, key)
+                                final_fragment['Resources'].pop(resource_name)
+                return final_fragment
+              except Exception as e:
+                log.error('Error occurred:: ' + str(e))
+
+          def get_final_fragment(length_resource_properties, resource_name, resource_properties, final_fragment, current_resource, key):
+              for x in range(0, length_resource_properties):
+                  # Specific to portfolioId related resources
+                  if resource_properties[x].startswith("port-"):
+                      final_fragment['Resources'][resource_name + resource_properties[x].strip("port-")] = copy.deepcopy(current_resource)
+                      final_fragment['Resources'][resource_name + resource_properties[x].strip("port-")]['Properties'][key] = resource_properties[x].strip()
+                      if resource_name=='TemplateLaunchRoleConstraint' or resource_name=='ResourceUpdateConstraint':
+                          final_fragment['Resources'][resource_name + resource_properties[x].strip("port-")]['DependsOn'] = 'AssociateProduct' + resource_properties[x].strip("port-")
+                  else:
+                      final_fragment['Resources'][resource_name + str(x+1)] = copy.deepcopy(current_resource)
+                      final_fragment['Resources'][resource_name + str(x+1)]['Properties'][key] = resource_properties[x].strip()
+                      
+          def handler(event, context):
+              """
+              Returns processed template back to CloudFormation
+              """
+              log.info(json.dumps(event))
+              processed_template=process_template(event)
+              log.info('Processed template' + json.dumps(processed_template))
+
+              r = {}
+              r['requestId'] = event['requestId']
+              r['status'] = 'SUCCESS'
+              r['fragment'] = processed_template
+
+              return r
+
+      Handler: index.handler
+      Runtime: python3.7
+      Role: !GetAtt rTransformExecutionRole.Arn
+  rTransformFunctionPermissions:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt rTransformFunction.Arn
+      Principal: 'cloudformation.amazonaws.com'
+  rTransform:
+    Type: AWS::CloudFormation::Macro
+    Properties:
+      Name: 'ReplicateWith'
+      Description: Replicates the resources based on parameters provided
+      FunctionName: !GetAtt rTransformFunction.Arn
+
+  CodeBuildProjectLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 731
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+  CodePipelineArtifactStoreBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties: 
+      BucketEncryption: 
+        ServerSideEncryptionConfiguration: 
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256    
+  CodePipelineArtifactStoreBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref CodePipelineArtifactStoreBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: DenyUnEncryptedObjectUploads
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Join 
+              - ''
+              - - !GetAtt 
+                  - CodePipelineArtifactStoreBucket
+                  - Arn
+                - /*
+            Condition:
+              'Null':
+                's3:x-amz-server-side-encryption': true
+          - Sid: DenyInsecureConnections
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: !Join 
+              - ''
+              - - !GetAtt 
+                  - CodePipelineArtifactStoreBucket
+                  - Arn
+                - /*
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+  AmazonCloudWatchEventRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: cwe-pipeline-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 'codepipeline:StartPipelineExecution'
+                Resource: !Join 
+                  - ''
+                  - - 'arn:aws:codepipeline:'
+                    - !Ref 'AWS::Region'
+                    - ':'
+                    - !Ref 'AWS::AccountId'
+                    - ':'
+                    - !Ref AppPipeline
+  AmazonCloudWatchEventRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - CodeCommit Repository State Change
+        resources:
+          - !Join 
+            - ''
+            - - 'arn:aws:codecommit:'
+              - !Ref 'AWS::Region'
+              - ':'
+              - !Ref 'AWS::AccountId'
+              - ':'
+              - !Ref RepositoryName
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - main
+      Targets:
+        - Arn: !Join 
+            - ''
+            - - 'arn:aws:codepipeline:'
+              - !Ref 'AWS::Region'
+              - ':'
+              - !Ref 'AWS::AccountId'
+              - ':'
+              - !Ref AppPipeline
+          RoleArn: !GetAtt 
+            - AmazonCloudWatchEventRole
+            - Arn
+          Id: codepipeline-AppPipeline
+  ServiceCatalogPortfolioCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: false
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: "AWS_ACCOUNT_ID"
+            Type: PLAINTEXT
+            Value: !Ref 'AWS::AccountId'
+          - Name: "ENVIRONMENTTYPE"
+            Type: PLAINTEXT
+            Value: !Ref EnvironmentType
+          - Name: "ServiceCatalogAdminRole"
+            Type: PLAINTEXT
+            Value: !Join 
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref 'AWS::AccountId'
+                    - ':role/'
+                    - !Ref IamRoleName
+      ServiceRole: !Join 
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref 'AWS::AccountId'
+                    - ':role/'
+                    - !Ref IamRoleName
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+          artifacts:
+            files:
+              - '**/*'
+          phases:
+            pre_build:
+              commands:
+                - python --version
+                - find .
+            install:
+              runtime-versions:
+                python: 3.8
+            build:
+              commands: 
+                - find .
+                - python ./Portfolio/buildspec-portfolio.py
+      LogsConfig:
+        CloudWatchLogs:
+          GroupName: !Ref CodeBuildProjectLogGroup
+          Status: ENABLED
+      VpcConfig:
+        SecurityGroupIds: !Ref SecurityGroupIds
+        Subnets:
+          - !Select [ 0, !Ref Subnets ]
+        VpcId: !Ref VPCID
+  ServiceCatalogPortfolioSharesCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: false
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: "AWS_ACCOUNT_ID"
+            Type: PLAINTEXT
+            Value: !Ref 'AWS::AccountId'
+          - Name: "ENVIRONMENTTYPE"
+            Type: PLAINTEXT
+            Value: !Ref EnvironmentType
+          - Name: "ServiceCatalogAdminRole"
+            Type: PLAINTEXT
+            Value: !Join 
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref 'AWS::AccountId'
+                    - ':role/'
+                    - !Ref IamRoleName
+      ServiceRole: !Join 
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref 'AWS::AccountId'
+                    - ':role/'
+                    - !Ref IamRoleName
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+          artifacts:
+            files:
+              - '**/*'
+          phases:
+            pre_build:
+              commands:
+                - python --version
+            install:
+              runtime-versions:
+                python: 3.8
+            build:
+              commands: 
+                - python ./Portfolio-shares/buildspec-portfolio-shares.py
+      LogsConfig:
+        CloudWatchLogs:
+          GroupName: !Ref CodeBuildProjectLogGroup
+          Status: ENABLED
+      VpcConfig:
+        SecurityGroupIds: !Ref SecurityGroupIds
+        Subnets:
+          - !Select [ 0, !Ref Subnets ]
+        VpcId: !Ref VPCID
+  ServiceCatalogProductCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: false
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: "AWS_ACCOUNT_ID"
+            Type: PLAINTEXT
+            Value: !Ref 'AWS::AccountId'
+          - Name: "ENVIRONMENTTYPE"
+            Type: PLAINTEXT
+            Value: !Ref EnvironmentType
+          - Name: "ARTIFACT_BUCKET"
+            Type: PLAINTEXT
+            Value: !Ref ArtifactBucket
+          - Name: ServiceCatalogAdminRole
+            Type: PLAINTEXT
+            Value: !Join 
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref 'AWS::AccountId'
+                    - ':role/'
+                    - !Ref IamRoleName
+      ServiceRole: !Join 
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref 'AWS::AccountId'
+                    - ':role/'
+                    - !Ref IamRoleName
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+            exported-variables:
+              - BP_PRODUCT_VERSION
+              - BP_PRODUCT_ID
+          artifacts:
+            files:
+              - '**/*'
+          phases:
+            pre_build:
+              commands:
+                - python --version
+            install:
+              runtime-versions:
+                python: 3.8
+            build:
+              commands: 
+                - python ./Product/buildspec-product.py
+      LogsConfig:
+        CloudWatchLogs:
+          GroupName: !Ref CodeBuildProjectLogGroup
+          Status: ENABLED
+      VpcConfig:
+        SecurityGroupIds: !Ref SecurityGroupIds
+        Subnets:
+          - !Select [ 0, !Ref Subnets ]
+        VpcId: !Ref VPCID
+  ServiceCatalogProductTenantCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: false
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: "AWS_ACCOUNT_ID"
+            Type: PLAINTEXT
+            Value: !Ref 'AWS::AccountId'
+          - Name: "ENVIRONMENTTYPE"
+            Type: PLAINTEXT
+            Value: !Ref EnvironmentType
+          - Name: "ARTIFACT_BUCKET"
+            Type: PLAINTEXT
+            Value: !Ref ArtifactBucket
+      ServiceRole: !Join 
+                  - ''
+                  - - 'arn:aws:iam::'
+                    - !Ref 'AWS::AccountId'
+                    - ':role/'
+                    - !Ref IamRoleName
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+          artifacts:
+            files:
+              - '**/*'
+          phases:
+            pre_build:
+              commands:
+                - python --version
+            install:
+              runtime-versions:
+                python: 3.8
+            build:
+              commands: 
+                - python ./Product-tenant/buildspec-product-tenant.py
+      LogsConfig:
+        CloudWatchLogs:
+          GroupName: !Ref CodeBuildProjectLogGroup
+          Status: ENABLED
+      VpcConfig:
+        SecurityGroupIds: !Ref SecurityGroupIds
+        Subnets:
+          - !Select [ 0, !Ref Subnets ]
+        VpcId: !Ref VPCID
+
+  AppPipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      Name: ServiceCatalog-Pipeline
+      RoleArn: !GetAtt 
+        - CodePipelineServiceRole
+        - Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: CodeAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              OutputArtifacts:
+                - Name: CodeOutput
+              Configuration:
+                BranchName: 'main'
+                RepositoryName: 'ServiceCatalog-CodeRepo'
+                PollForSourceChanges: True
+              RunOrder: 1
+            - Name: ConfigAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              OutputArtifacts:
+                - Name: ConfigOutput
+              Configuration:
+                BranchName: !Ref BranchName
+                RepositoryName: !Ref RepositoryName
+                PollForSourceChanges: false
+              RunOrder: 1
+            - Name: BlueprintProductAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              OutputArtifacts:
+                - Name: BlueprintProductOutput
+              Configuration:
+                BranchName: 'main'
+                RepositoryName: 'ServiceCatalog-BlueprintProductRepo'
+                PollForSourceChanges: false
+              RunOrder: 1
+        - Name: Deploy-Portfolios
+          Actions: 
+            - Name: Deploy-Portfolios
+              InputArtifacts: 
+                - Name: ConfigOutput
+                - Name: CodeOutput
+                - Name: BlueprintProductOutput
+              ActionTypeId: 
+                Category: Build 
+                Owner: AWS 
+                Version: 1 
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref ServiceCatalogPortfolioCodeBuildProject
+                PrimarySource: CodeOutput
+              OutputArtifacts:
+                - Name: PortfoliosOutput
+              RunOrder: 2
+        - Name: Deploy-Portfolio-shares
+          Actions: 
+            - Name: Deploy-Portfolio-shares
+              InputArtifacts: 
+                - Name: ConfigOutput
+                - Name: CodeOutput
+                - Name: PortfoliosOutput
+              ActionTypeId: 
+                Category: Build 
+                Owner: AWS 
+                Version: 1 
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref ServiceCatalogPortfolioSharesCodeBuildProject
+                PrimarySource: CodeOutput
+              OutputArtifacts:
+                - Name: PortfolioSharesOutput
+              RunOrder: 3
+        - Name: Deploy-Blueprint-Admin-Bootstrapping-Product
+          Actions: 
+            - Name: Deploy-Blueprint-Admin-Bootstrapping-Product
+              InputArtifacts: 
+                - Name: ConfigOutput
+                - Name: CodeOutput
+                - Name: PortfolioSharesOutput
+              ActionTypeId: 
+                Category: Build 
+                Owner: AWS 
+                Version: 1 
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref ServiceCatalogProductCodeBuildProject
+                PrimarySource: CodeOutput
+              Namespace: PackageVars
+              OutputArtifacts:
+                - Name: BlueprintAdminBootstrappingOutput
+              RunOrder: 4
+        - Name: Deploy-Portfolio-Blueprint-Product
+          Actions: 
+            - Name: Deploy-Portfolio-Blueprint-Product
+              InputArtifacts: 
+                - Name: ConfigOutput
+                - Name: BlueprintProductOutput
+                - Name: CodeOutput
+                - Name: BlueprintAdminBootstrappingOutput
+              ActionTypeId: 
+                Category: Build 
+                Owner: AWS 
+                Version: 1 
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref ServiceCatalogProductTenantCodeBuildProject
+                PrimarySource: CodeOutput
+                EnvironmentVariables: !Sub '[{"name":"PROVISIONING_ARTIFACT_NAME","value":"#{PackageVars.BP_PRODUCT_VERSION}","type":"PLAINTEXT"},{"name":"BLUEPRINT_PRODUCT_ID","value":"#{PackageVars.BP_PRODUCT_ID}","type":"PLAINTEXT"},{"name":"CONFIG_FILE","value":"./config_${EnvironmentType}.yml","type":"PLAINTEXT"}]'
+              RunOrder: 5
+
+      ArtifactStore:
+        Type: S3
+        Location: !Ref CodePipelineArtifactStoreBucket
+  CodePipelineServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AWS-CodePipeline-Service-3
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'codecommit:CancelUploadArchive'
+                  - 'codecommit:GetBranch'
+                  - 'codecommit:GetCommit'
+                  - 'codecommit:GetUploadArchiveStatus'
+                  - 'codecommit:UploadArchive'
+                Resource:
+                  - !Sub "arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:*"
+              - Effect: Allow
+                Action:
+                  - 'codedeploy:CreateDeployment'
+                  - 'codedeploy:GetApplicationRevision'
+                  - 'codedeploy:GetDeployment'
+                  - 'codedeploy:GetDeploymentConfig'
+                  - 'codedeploy:RegisterApplicationRevision'
+                Resource:
+                  - !Sub "arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:*"
+              - Effect: Allow
+                Action:
+                  - 'codebuild:BatchGetBuilds'
+                  - 'codebuild:StartBuild'
+                Resource:
+                  - !Sub "arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:*"
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                  - 'lambda:ListFunctions'
+                Resource:
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:*"
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetBucketPolicy
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:PutObjectAcl
+                  - s3:GetObjectAcl
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !Sub "arn:aws:s3:::${ArtifactBucket}/*"
+                  - !Sub "arn:aws:s3:::${ArtifactBucket}"
+                  - !Join
+                    - ''
+                    - - !GetAtt 
+                        - CodePipelineArtifactStoreBucket
+                        - Arn
+                      - /*
+
+              # - Effect: Allow
+              #   Action:
+              #     - 'iam:PassRole'
+              #   Resource: '*'
+              #   Condition:
+              #     StringEqualsIfExists:
+              #       iam:PassedToService:
+              #       - cloudformation.amazonaws.com
+              #       - s3.amazonaws.com
+              #       - ec2.amazonaws.com                
+              #       - servicecatalog.amazonaws.com                
+              # - Effect: Allow
+              #   Action:
+              #     - 'cloudwatch:*'
+              #     - 's3:*'
+              #     - 'sns:*'
+              #     - 'cloudformation:*'
+              #   Resource: '*'
+
+  cCleanup:
+      Type: AWS::Lambda::Function
+      Properties:
+        Code:
+          ZipFile: |
+            import cfnresponse
+            import datetime
+            import boto3
+            import os
+            import time
+
+            response_data = {}
+            def lambda_handler(event, context):
+              print(event)
+              try:
+                if event['RequestType'] == 'Delete':
+                  time.sleep(60)
+                  session = boto3.Session()
+                  ssm_client = session.client('ssm')
+                  servicecatalog_client = session.client('servicecatalog')
+
+                  ssm_product_id = ssm_client.get_parameter(Name="/blueprints/service-catalog/{}/AdminProduct/Bootstrapping-Admin-Product/product-id".format(os.getenv('ENVIRONMENTTYPE')),WithDecryption=True)['Parameter']['Value']
+                  print("Admin product id is {}".format(ssm_product_id))
+                  ssm_portfolio_id = ssm_client.get_parameter(Name="/blueprints/service-catalog/{}/Portfolio/Bootstrapping-Admin-Portfolio/portfolio-id".format(os.getenv('ENVIRONMENTTYPE')),WithDecryption=True)['Parameter']['Value']
+                  print("Admin portfolio id is {}".format(ssm_portfolio_id))
+
+                  servicecatalog_client.disassociate_product_from_portfolio(ProductId=ssm_product_id,PortfolioId=ssm_portfolio_id)
+                  print("Disassociated admin product {} from admin portfolio {}".format(ssm_product_id,ssm_portfolio_id))
+
+                  sc_portfolio_principals = servicecatalog_client.list_principals_for_portfolio(PortfolioId=ssm_portfolio_id)['Principals']
+                  sc_portfolio_principal_ARN_list = [d['PrincipalARN'] for d in sc_portfolio_principals if 'PrincipalARN' in d]
+                  for portfolio_principal_ARN in sc_portfolio_principal_ARN_list:
+                      print("portfolio principal arn is {}".format(portfolio_principal_ARN))
+                      if "arn:aws:iam:::role" in portfolio_principal_ARN:
+                          servicecatalog_client.disassociate_principal_from_portfolio(PortfolioId=ssm_portfolio_id,PrincipalType='IAM_PATTERN',PrincipalARN=portfolio_principal_ARN)
+                      else:
+                          servicecatalog_client.disassociate_principal_from_portfolio(PortfolioId=ssm_portfolio_id,PrincipalType='IAM',PrincipalARN=portfolio_principal_ARN)
+                      print("Disassociated {}".format(portfolio_principal_ARN))
+                  servicecatalog_client.delete_portfolio(Id=ssm_portfolio_id)
+                  print("Deleted portfolio {}".format(ssm_portfolio_id))
+
+                  print("Deleting /blueprints/service-catalog/{}/Portfolio/Bootstrapping-Admin-Portfolio".format(os.getenv('ENVIRONMENTTYPE')))
+                  ssm_client.delete_parameter(Name="/blueprints/service-catalog/{}/Portfolio/Bootstrapping-Admin-Portfolio".format(os.getenv('ENVIRONMENTTYPE')))
+                  print("Deleted /blueprints/service-catalog/{}/Portfolio/Bootstrapping-Admin-Portfolio".format(os.getenv('ENVIRONMENTTYPE')))
+
+                  print("Getting /blueprints/service-catalog/{}/AdminProduct/Bootstrapping-Admin-Product/product-id".format(os.getenv('ENVIRONMENTTYPE')))
+                  ssm_product_id = ssm_client.get_parameter(Name="/blueprints/service-catalog/{}/AdminProduct/Bootstrapping-Admin-Product/product-id".format(os.getenv('ENVIRONMENTTYPE')),WithDecryption=True)['Parameter']['Value']
+                  servicecatalog_client.delete_product(Id=ssm_product_id )
+                  print("Deleted product {} ".format(ssm_product_id))
+                  ssm_client.delete_parameter(Name="/blueprints/service-catalog/{}/AdminProduct/Bootstrapping-Admin-Product".format(os.getenv('ENVIRONMENTTYPE')))
+
+
+                  response_data['message'] = "Deleted product Bootstrapping-Admin-Product and portfolio Bootstrapping-Admin-Portfolio successfully"
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data,"{}-cleanup".format(os.getenv('STACKNAME')))
+              except:
+                response_data['message'] = "Failed to delete"
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data,"{}-cleanup".format(os.getenv('STACKNAME')))
+        FunctionName: !Sub ${AWS::StackName}-admin-product-portfolio-cleanup
+        Handler: index.lambda_handler
+        Runtime: python3.11
+        Timeout: 300
+        Environment:
+          Variables:
+            ENVIRONMENTTYPE: !Ref EnvironmentType
+            STACKNAME: !Ref 'AWS::StackName'
+        Role: !Join 
+                    - ''
+                    - - 'arn:aws:iam::'
+                      - !Ref 'AWS::AccountId'
+                      - ':role/'
+                      - !Ref IamRoleName
+  cleanupAdmin:
+    Type: Custom::cleanupAdmin
+    Properties:
+      ServiceToken: !GetAtt cCleanup.Arn

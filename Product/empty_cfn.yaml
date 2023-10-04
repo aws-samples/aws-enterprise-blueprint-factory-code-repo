@@ -1,0 +1,20 @@
+# We need to use a neutral / empty template for the initial version as CodePipeline creates new Product versions, 
+# not the product itself, and to create a product you need an initial artifact, but we dont have an initial artifact yet as
+# the product has to exist before the pipeline so that the pipeline can refer to the productId.
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Almost Empty CloudFormation stack
+Conditions:
+  HasNot:
+    Fn::Equals: [ 'x', 'y' ]
+
+Resources:
+  Topic:
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W47
+            reason: "This is just an example template"
+    Type: AWS::SNS::Topic  
+  NullResource:
+    Type: 'Custom::NullResource'
+    Condition: HasNot
