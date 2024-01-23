@@ -10,18 +10,6 @@ logger = logging.getLogger()
 
 exitcode = 0
 
-# if os.getenv("CODEBUILD_SRC_DIR_ConfigOutput") is None:
-#     os.environ["BP_PRODUCT_VERSION"] = "0.8.6"
-#     os.environ["PROVISIONING_ARTIFACT_NAME"] = "0.8.6"
-#     os.environ["PRODUCT_ID"] = "prod-b4k6ytqwxswni"
-#     os.environ["BLUEPRINT_PRODUCT_ID"] = "prod-b4k6ytqwxswni"
-#     os.environ["ENVIRONMENTTYPE"] = "DEV"
-#     os.environ["CODEBUILD_SRC_DIR_ConfigOutput"] = "c:\\Amazon\Blogs\\test9\\ServiceCatalog-ConfigRepo"
-#     os.environ["ARTIFACT_BUCKET"] =  "scd-joeguo-service-catalog"
-#     os.environ["AWS_REGION"] = "ap-southeast-2"
-#     os.environ["LocalRoleName"] = "LocalRoleName"
-#     os.environ["AWS_ACCOUNT_ID"] = "831932040055"
-
 CONFIG_FILE_DEV = "{}/bp_config.yml".format(os.getenv("CODEBUILD_SRC_DIR_ConfigOutput"))
 
 SSM_PRODUCT_PREFIX = "/blueprints/service-catalog/{}/AdminProduct".format(os.getenv('ENVIRONMENTTYPE'))
