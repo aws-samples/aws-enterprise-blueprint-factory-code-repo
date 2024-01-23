@@ -11,16 +11,6 @@ logger = logging.getLogger()
 
 exitcode = 0
 
-if os.getenv("CODEBUILD_SRC_DIR_ConfigOutput") is None:
-    os.environ["ENVIRONMENTTYPE"] = "DEV"
-    os.environ["CODEBUILD_SRC_DIR_ConfigOutput"] = "c:\\Amazon\Blogs\\test9\\ServiceCatalog-ConfigRepo"
-    os.environ["ARTIFACT_BUCKET"] =  "scd-joeguo-service-catalog"
-    os.environ["AWS_REGION"] = "ap-southeast-2"
-    os.environ["LocalRoleName"] = "LocalRoleName"
-    os.environ["AWS_ACCOUNT_ID"] = "831932040055"
-    os.environ["ServiceCatalogAdminRole"] = "arn:aws:iam::831932040055:role/codebuild-servicecatalog-admin-role"
-    
-
 CONFIG_FILE_DEV = "{}/bp_config.yml".format(os.getenv("CODEBUILD_SRC_DIR_ConfigOutput"))
 
 SSM_PRODUCT_PREFIX = "/blueprints/service-catalog/{}/AdminProduct".format(os.getenv('ENVIRONMENTTYPE'))
@@ -34,8 +24,6 @@ servicecatalog_client = session.client('servicecatalog')
 with open(CONFIG_FILE_DEV, "r") as config_file_dev:
     config_file_dev_json = yaml.safe_load(config_file_dev)
    
-
-
 config_file_dev_admin_json = {
   "portfolios": [
     {
@@ -89,8 +77,6 @@ for portfolio in conf_portfolio_list:
         conf_portfolio_shares = []
     else:
         conf_portfolio_shares = portfolio['share_to_accounts']
-
-
         
     conf_portfolio_shares_acc_id = [d['account_id'] for d in conf_portfolio_shares if 'account_id' in d]
    
@@ -110,14 +96,6 @@ for portfolio in conf_portfolio_list:
                 logger.info("Created Portfolio Share {} for portfolio {}".format(conf_portfolio_share['account_id'],portfolio['portfolio_name']))
             except ClientError as e:
                 logger.info("Create Portfolio Share {} for portfolio {} failed with error {}".format(conf_portfolio_share['account_id'],portfolio['portfolio_name'],e.message))
-    #### Create, Update and Delete Service Catalog Portfolio Shares - OU      
-    ### Associate, Update and disassociate Service Catalog Portfolio Principals
-    sc_portfolio_ou = servicecatalog_client.describe_portfolio_shares(PortfolioId=sc_portfolio_id,Type='ORGANIZATION')
-    if sc_portfolio_ou is not None and 'PortfolioShareDetails' in sc_portfolio_ou:
-        sc_portfolio_ou_id = [d['PrincipalId'] for d in sc_portfolio_ou['PortfolioShareDetails'] if 'PrincipalId' in d]
-    else:
-        sc_portfolio_ou_id = []
-        
     if 'share_to_ou' in portfolio:
         conf_portfolio_ou = portfolio['share_to_ou']
         if conf_portfolio_ou is None:
@@ -125,27 +103,25 @@ for portfolio in conf_portfolio_list:
     else:
         conf_portfolio_ou = []
     if "share_to_ou" in portfolio:
+        sc_portfolio_ou = servicecatalog_client.describe_portfolio_shares(PortfolioId=sc_portfolio_id,Type='ORGANIZATION')
+        if sc_portfolio_ou is not None and 'PortfolioShareDetails' in sc_portfolio_ou:
+            sc_portfolio_ou_id = [d['PrincipalId'] for d in sc_portfolio_ou['PortfolioShareDetails'] if 'PrincipalId' in d]
+        else:
+            sc_portfolio_ou_id = []
+
         for sc_ou_id in sc_portfolio_ou_id:
             if sc_ou_id not in conf_portfolio_ou:
-#                servicecatalog_client.disassociate_principal_from_portfolio(PortfolioId=sc_portfolio_id,PrincipalARN=portfolio_principal_ARN)
                 servicecatalog_client.delete_portfolio_share(PortfolioId=sc_portfolio_id,OrganizationNode={'Type':'ORGANIZATION','Value': sc_ou_id} )
                 logger.info("Disassociated ou id {} with portfolio {}".format(sc_ou_id,portfolio['portfolio_name']))
         for conf_ou_id in conf_portfolio_ou:
             if conf_ou_id not in sc_portfolio_ou_id:
                 org_arn = "arn:aws:organizations::{}:organization/{}".format(os.environ["AWS_ACCOUNT_ID"],conf_ou_id['org_id'])
                 try:
-#                    servicecatalog_client.associate_principal_with_portfolio(PortfolioId=sc_portfolio_id,PrincipalType='IAM',PrincipalARN=portfolio_principal_ARN)
                     servicecatalog_client.create_portfolio_share(PortfolioId=sc_portfolio_id,OrganizationNode={'Type':'ORGANIZATION','Value': org_arn}, SharePrincipals=True,ShareTagOptions=True )
                     logger.info("Associated ou id {} with portfolio {}".format(org_arn,portfolio['portfolio_name']))
                 except ClientError as e:
                     logger.info("Failed to associate ou id {} with portfolio {}. Error message: {}".format(org_arn,portfolio['portfolio_name'],e))
-    else:
-        for sc_ou_id in sc_portfolio_ou_id:
-#            servicecatalog_client.disassociate_principal_from_portfolio(PortfolioId=sc_portfolio_id,PrincipalARN=ou_id)
-            servicecatalog_client.delete_portfolio_share(PortfolioId=sc_portfolio_id,OrganizationNode={'Type':'ORGANIZATION','Value': sc_ou_id} )
-            logger.info("Disassociated ou id {} with portfolio {}".format(sc_ou_id,portfolio['portfolio_name']))
-
-                       
+   
     ### Create, Update and Delete Service Catalog Portfolio Tags
     if "stack_tags" in portfolio:
         sc_portfolio_tags = servicecatalog_client.describe_portfolio(Id=sc_portfolio_id)['Tags']
