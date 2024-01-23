@@ -24,42 +24,10 @@ servicecatalog_client = session.client('servicecatalog')
 with open(CONFIG_FILE_DEV, "r") as config_file_dev:
     config_file_dev_json = yaml.safe_load(config_file_dev)
    
-config_file_dev_admin_json = {
-  "portfolios": [
-    {
-      "portfolio_name": "Bootstrapping-Admin-Portfolio",
-      "owner": "ServiceCatalogAdminTeam",
-      "provider_name": "AWS",
-      "description": "Admin products portfolio",
-      "portfolio_access_roles": [
-        "arn:aws:iam::831932040055:role/codebuild-servicecatalog-admin-role"
-      ],
-      "portfolio_access_roles": [
-        "{}".format(os.getenv('ServiceCatalogAdminRole'))
-      ],
-      "stack_tags": {
-        "DataClassification": "Confidential",
-        "Organization": "AWS",
-        "ProductType": "Admin"
-      }
-    }
-  ]
-}
-
-
-
-if config_file_dev_admin_json is None or 'portfolios' not in config_file_dev_admin_json or config_file_dev_admin_json['portfolios'] is None:
-    conf_portfolio_dev_admin_list = []
-else:
-    conf_portfolio_dev_admin_list = config_file_dev_admin_json['portfolios']
-
 if config_file_dev_json is None or 'portfolios' not in config_file_dev_json or config_file_dev_json['portfolios'] is None:
-    conf_portfolio_dev_list = []
+    conf_portfolio_list = []
 else:
-    conf_portfolio_dev_list = config_file_dev_json['portfolios']
-
-
-conf_portfolio_list = conf_portfolio_dev_admin_list + conf_portfolio_dev_list
+    conf_portfolio_list = config_file_dev_json['portfolios']
 
 for portfolio in conf_portfolio_list:
     logger.info("{}/{}/portfolio-id".format(SSM_PORTFOLIO_PREFIX,portfolio['portfolio_name']))
