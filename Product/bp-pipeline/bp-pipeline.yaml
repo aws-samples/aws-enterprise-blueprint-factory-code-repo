@@ -274,7 +274,7 @@ Resources:
       Environment: 
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
-        Image: aws/codebuild/standard:5.0
+        Image: aws/codebuild/standard:7.0
         ImagePullCredentialsType: CODEBUILD
       Name: !Sub '${ProductName}-BuildstepCfnLintCheck-${AWS::StackName}'
       ServiceRole: !GetAtt CodeBuildProjectRole.Arn
