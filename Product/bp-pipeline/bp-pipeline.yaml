@@ -510,7 +510,7 @@ Resources:
           phases:
             install:
               runtime-versions:
-                python: 3.9
+                python: 3.12
             build:
               commands:
                 - DIR=`echo ${ProductConfigFile} |xargs dirname`
