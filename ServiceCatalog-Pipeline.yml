@@ -187,7 +187,7 @@ Resources:
               return r
 
       Handler: index.handler
-      Runtime: python3.7
+      Runtime: python3.12
       Role: !GetAtt rTransformExecutionRole.Arn
   rTransformFunctionPermissions:
     Type: AWS::Lambda::Permission
@@ -361,7 +361,7 @@ Resources:
                 - find .
             install:
               runtime-versions:
-                python: 3.8
+                python: 3.12
             build:
               commands: 
                 - find .
@@ -422,7 +422,7 @@ Resources:
                 - python --version
             install:
               runtime-versions:
-                python: 3.8
+                python: 3.12
             build:
               commands: 
                 - python ./Portfolio-shares/buildspec-portfolio-shares.py
@@ -488,7 +488,7 @@ Resources:
                 - python --version
             install:
               runtime-versions:
-                python: 3.8
+                python: 3.12
             build:
               commands: 
                 - python ./Product/buildspec-product.py
@@ -543,7 +543,7 @@ Resources:
                 - python --version
             install:
               runtime-versions:
-                python: 3.8
+                python: 3.12
             build:
               commands: 
                 - python ./Product-tenant/buildspec-product-tenant.py
@@ -827,7 +827,7 @@ Resources:
                 cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data,"{}-cleanup".format(os.getenv('STACKNAME')))
         FunctionName: !Sub ${AWS::StackName}-admin-product-portfolio-cleanup
         Handler: index.lambda_handler
-        Runtime: python3.11
+        Runtime: python3.12
         Timeout: 300
         Environment:
           Variables:
