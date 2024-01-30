@@ -204,8 +204,6 @@ Resources:
 
   CodeBuildProjectLogGroup:
     Type: AWS::Logs::LogGroup
-    Properties:
-      RetentionInDays: 731
     UpdateReplacePolicy: Retain
     DeletionPolicy: Retain
   CodePipelineArtifactStoreBucket:
