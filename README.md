@@ -39,29 +39,27 @@ In the first stage, the template is checked for file alignment. The pipeline acc
 
 * AWS accounts.
 * AWS Organizations set up in case of  Multi-Accounts with Management-Tenant model.
-* Access to CloudFormation  and permissions to deploy a CloudFormation stack with the ability to  create the following resources: AWS CodeCommit - CodeCommit repos, AWS CodePipeline  - Code pipelines, AWS CodeBuild - CodeBuild projects, AWS  Service Catalog - Portfolios, Products and Provisioned products, AWS  Systems Manager - Parameter store, Amazon CloudWatch Log Group  - CloudWatch Log group, Amazon S3 - S3 buckets, Amazon  EventBridge – EventBusPolicy and Rule, Amazon SNS – Topic,  TopicPolicy and Subscription, AWS KMS – Key and KeyPolicy, and AWS  IAM – Role and Policy.
+* Access to CloudFormation  and permissions to deploy a CloudFormation stack with the ability to  create the following resources: AWS CodeConnections - coneciton to your git repositories, AWS CodePipeline  - Code pipelines, AWS CodeBuild - CodeBuild projects, AWS  Service Catalog - Portfolios, Products and Provisioned products, AWS  Systems Manager - Parameter store, Amazon CloudWatch Log Group  - CloudWatch Log group, Amazon S3 - S3 buckets, Amazon  EventBridge – EventBusPolicy and Rule, Amazon SNS – Topic,  TopicPolicy and Subscription, AWS KMS – Key and KeyPolicy, and AWS  IAM – Role and Policy.
 
 ### Installing
 
-* Clone Gitlab repositories and create CodeCommit reportories
+* Clone repositories into Github
+Please adjust the method, hostname and destination repo name/group to suit your git provider
 ```
 git clone git@github.com:aws-samples/aws-enterprise-blueprint-factory-blueprint-repo.git ServiceCatalog-BlueprintProductRepo
 git clone git@github.com:aws-samples/aws-enterprise-blueprint-factory-config-repo.git ServiceCatalog-ConfigRepo
 git clone git@github.com:aws-samples/aws-enterprise-blueprint-factory-code-repo.git ServiceCatalog-CodeRepo
-aws codecommit create-repository --repository-name ServiceCatalog-ConfigRepo
-aws codecommit create-repository --repository-name ServiceCatalog-CodeRepo
-aws codecommit create-repository --repository-name ServiceCatalog-BlueprintProductRepo
 cd ServiceCatalog-ConfigRepo
-git remote rename origin origin-gitlab
-git remote add origin https://git-codecommit.<region>.amazonaws.com/v1/repos/ServiceCatalog-ConfigRepo
+git remote rename origin origin-public
+git remote add origin git@github.com:ServiceCatalog-ConfigRepo
 git push origin main
 cd ../ServiceCatalog-CodeRepo
-git remote rename origin origin-gitlab
-git remote add origin https://git-codecommit.<region>.amazonaws.com/v1/repos/ServiceCatalog-CodeRepo
+git remote rename origin origin-public
+git remote add origin git@github.com:ServiceCatalog-CodeRepo
 git push origin main
 cd ../ServiceCatalog-BlueprintProductRepo
-git remote rename origin origin-gitlab
-git remote add origin https://git-codecommit.<region>.amazonaws.com/v1/repos/ServiceCatalog-BlueprintProductRepo
+git remote rename origin origin-public
+git remote add origin git@github.com:ServiceCatalog-BlueprintProductRepo
 git push origin main
 ```
 
@@ -89,6 +87,9 @@ Shreejesh MV
 
 Haofei Feng
 [@haofeif](https://github.com/haofeif)
+
+Cam Maxwell
+[@cmaxwellau](https://github.com/cmaxwellau)
 
 
 ## Version History
