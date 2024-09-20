@@ -1,7 +1,13 @@
 Parameters:
-  RepositoryName:
+  ConfigRepositoryName:
     Type: String
-    Default: ServiceCatalog-ConfigRepo
+    Default: guojing1217/aws-enterprise-blueprint-factory-config-repo
+  CodeRepositoryName:
+    Type: String
+    Default: guojing1217/aws-enterprise-blueprint-factory-code-repo
+  BlueprintRepositoryName:
+    Type: String
+    Default: guojing1217/aws-enterprise-blueprint-factory-blueprint-repo
   BranchName:
     Type: String
     Default: main
@@ -32,14 +38,19 @@ Parameters:
     Default: '/blueprints/resources/artifacts-bucket-name'
     Type: 'AWS::SSM::Parameter::Value<String>'
     ConstraintDescription: 3-63 characters; must contain only lowercase letters or numbers
+  CodeStarConnectionArn:
+    Type: String
+    Default: 'arn:aws:codeconnections:us-east-1:831932040055:connection/6b066fb2-9b85-41b3-947f-a3338515d737'
+    Description: The ARN of the CodeStar GitHub connection
+
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups: 
       - 
         Label: 
-          default: "CodeCommit repository"
+          default: "Github repository"
         Parameters: 
-          - RepositoryName
+          - ConfigRepositoryName
           - BranchName
       - 
         Label: 
@@ -53,7 +64,7 @@ Metadata:
           - ArtifactBucket
           - ArtifactKmsKeyID
     ParameterLabels:
-      RepositoryName:
+      ConfigRepositoryName:
         default: Configuration Repository name
       BranchName:
         default: Configuration Repository branch name
@@ -201,7 +212,6 @@ Resources:
       Name: 'ReplicateWith'
       Description: Replicates the resources based on parameters provided
       FunctionName: !GetAtt rTransformFunction.Arn
-
   CodeBuildProjectLogGroup:
     Type: AWS::Logs::LogGroup
     UpdateReplacePolicy: Retain
@@ -246,71 +256,6 @@ Resources:
             Condition:
               Bool:
                 'aws:SecureTransport': false
-  AmazonCloudWatchEventRole:
-    Type: 'AWS::IAM::Role'
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - events.amazonaws.com
-            Action: 'sts:AssumeRole'
-      Path: /
-      Policies:
-        - PolicyName: cwe-pipeline-execution
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Effect: Allow
-                Action: 'codepipeline:StartPipelineExecution'
-                Resource: !Join 
-                  - ''
-                  - - 'arn:aws:codepipeline:'
-                    - !Ref 'AWS::Region'
-                    - ':'
-                    - !Ref 'AWS::AccountId'
-                    - ':'
-                    - !Ref AppPipeline
-  AmazonCloudWatchEventRule:
-    Type: 'AWS::Events::Rule'
-    Properties:
-      EventPattern:
-        source:
-          - aws.codecommit
-        detail-type:
-          - CodeCommit Repository State Change
-        resources:
-          - !Join 
-            - ''
-            - - 'arn:aws:codecommit:'
-              - !Ref 'AWS::Region'
-              - ':'
-              - !Ref 'AWS::AccountId'
-              - ':'
-              - !Ref RepositoryName
-        detail:
-          event:
-            - referenceCreated
-            - referenceUpdated
-          referenceType:
-            - branch
-          referenceName:
-            - main
-      Targets:
-        - Arn: !Join 
-            - ''
-            - - 'arn:aws:codepipeline:'
-              - !Ref 'AWS::Region'
-              - ':'
-              - !Ref 'AWS::AccountId'
-              - ':'
-              - !Ref AppPipeline
-          RoleArn: !GetAtt 
-            - AmazonCloudWatchEventRole
-            - Arn
-          Id: codepipeline-AppPipeline
   ServiceCatalogPortfolioCodeBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
@@ -570,39 +515,42 @@ Resources:
                 Category: Source
                 Owner: AWS
                 Version: 1
-                Provider: CodeCommit
+                Provider: CodeStarSourceConnection
               OutputArtifacts:
                 - Name: CodeOutput
               Configuration:
-                BranchName: 'main'
-                RepositoryName: 'ServiceCatalog-CodeRepo'
-                PollForSourceChanges: True
+                ConnectionArn: !Ref CodeStarConnectionArn
+                FullRepositoryId: !Ref CodeRepositoryName
+                BranchName: !Ref BranchName
+                DetectChanges: true                
               RunOrder: 1
             - Name: ConfigAction
               ActionTypeId:
                 Category: Source
                 Owner: AWS
                 Version: 1
-                Provider: CodeCommit
+                Provider: CodeStarSourceConnection
               OutputArtifacts:
                 - Name: ConfigOutput
               Configuration:
+                ConnectionArn: !Ref CodeStarConnectionArn
+                FullRepositoryId: !Ref ConfigRepositoryName 
                 BranchName: !Ref BranchName
-                RepositoryName: !Ref RepositoryName
-                PollForSourceChanges: false
+                DetectChanges: true
               RunOrder: 1
             - Name: BlueprintProductAction
               ActionTypeId:
                 Category: Source
                 Owner: AWS
                 Version: 1
-                Provider: CodeCommit
+                Provider: CodeStarSourceConnection
               OutputArtifacts:
                 - Name: BlueprintProductOutput
               Configuration:
+                ConnectionArn: !Ref CodeStarConnectionArn
+                FullRepositoryId: !Ref BlueprintRepositoryName
                 BranchName: 'main'
-                RepositoryName: 'ServiceCatalog-BlueprintProductRepo'
-                PollForSourceChanges: false
+                DetectChanges: true
               RunOrder: 1
         - Name: Deploy-Portfolios
           Actions: 
@@ -700,15 +648,6 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - 'codecommit:CancelUploadArchive'
-                  - 'codecommit:GetBranch'
-                  - 'codecommit:GetCommit'
-                  - 'codecommit:GetUploadArchiveStatus'
-                  - 'codecommit:UploadArchive'
-                Resource:
-                  - !Sub "arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:*"
-              - Effect: Allow
-                Action:
                   - 'codedeploy:CreateDeployment'
                   - 'codedeploy:GetApplicationRevision'
                   - 'codedeploy:GetDeployment'
@@ -728,6 +667,11 @@ Resources:
                   - 'lambda:ListFunctions'
                 Resource:
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:*"
+              - Effect: Allow
+                Action:
+                  - "codestar-connections:UseConnection"
+                Resource:
+                  - !Sub "arn:aws:codeconnections:*"
               - Effect: Allow
                 Action:
                   - s3:PutObject
