@@ -1,13 +1,13 @@
 Parameters:
   ConfigRepositoryName:
     Type: String
-    Default: guojing1217/aws-enterprise-blueprint-factory-config-repo
+    Default: some-user/aws-enterprise-blueprint-factory-config-repo
   CodeRepositoryName:
     Type: String
-    Default: guojing1217/aws-enterprise-blueprint-factory-code-repo
+    Default: some-user/aws-enterprise-blueprint-factory-code-repo
   BlueprintRepositoryName:
     Type: String
-    Default: guojing1217/aws-enterprise-blueprint-factory-blueprint-repo
+    Default: some-user/aws-enterprise-blueprint-factory-blueprint-repo
   BranchName:
     Type: String
     Default: main
