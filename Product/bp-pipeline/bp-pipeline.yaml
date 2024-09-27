@@ -544,7 +544,7 @@ Resources:
                 Provider: CodeStarSourceConnection
                 Version: '1'
               Configuration:
-                RepositoryName: !Ref BlueprintRepoName
+                FullRepositoryId: !Ref BlueprintRepoName
                 BranchName: !Ref BranchName
               OutputArtifacts:
                 - Name: SourceOutput
