@@ -329,7 +329,7 @@ Resources:
               commands:
                 - echo "Installing cfn-nag"
                 - pip install cfn-lint
-                - apt-get install jq git -y -q
+                - apt-get install jq -y -q
                 - gem install cfn-nag
             build:
               commands:

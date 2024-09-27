@@ -38,10 +38,9 @@ Parameters:
     Default: '/blueprints/resources/artifacts-bucket-name'
     Type: 'AWS::SSM::Parameter::Value<String>'
     ConstraintDescription: 3-63 characters; must contain only lowercase letters or numbers
-  CodeStarConnectionArn:
+  CodeConnectionArn:
     Type: String
-    Default: 'arn:aws:codeconnections:us-east-1:831932040055:connection/6b066fb2-9b85-41b3-947f-a3338515d737'
-    Description: The ARN of the CodeStar GitHub connection
+    Description: The ARN of the CodeConnections GitHub connection
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -51,6 +50,8 @@ Metadata:
           default: "Github repository"
         Parameters: 
           - ConfigRepositoryName
+          - CodeRepositoryName
+          - BlueprintRepositoryName
           - BranchName
       - 
         Label: 
@@ -519,7 +520,7 @@ Resources:
               OutputArtifacts:
                 - Name: CodeOutput
               Configuration:
-                ConnectionArn: !Ref CodeStarConnectionArn
+                ConnectionArn: !Ref CodeConnectionArn
                 FullRepositoryId: !Ref CodeRepositoryName
                 BranchName: !Ref BranchName
                 DetectChanges: true                
@@ -533,7 +534,7 @@ Resources:
               OutputArtifacts:
                 - Name: ConfigOutput
               Configuration:
-                ConnectionArn: !Ref CodeStarConnectionArn
+                ConnectionArn: !Ref CodeConnectionArn
                 FullRepositoryId: !Ref ConfigRepositoryName 
                 BranchName: !Ref BranchName
                 DetectChanges: true
@@ -547,7 +548,7 @@ Resources:
               OutputArtifacts:
                 - Name: BlueprintProductOutput
               Configuration:
-                ConnectionArn: !Ref CodeStarConnectionArn
+                ConnectionArn: !Ref CodeConnectionArn
                 FullRepositoryId: !Ref BlueprintRepositoryName
                 BranchName: 'main'
                 DetectChanges: true
@@ -669,9 +670,10 @@ Resources:
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:*"
               - Effect: Allow
                 Action:
+                  - "codeconnections:UseConnection"
                   - "codestar-connections:UseConnection"
                 Resource:
-                  - !Sub "arn:aws:codeconnections:*"
+                  - !Sub "arn:aws:codeconnections:${AWS::Region}:${AWS::AccountId}:connection/*"
               - Effect: Allow
                 Action:
                   - s3:PutObject
