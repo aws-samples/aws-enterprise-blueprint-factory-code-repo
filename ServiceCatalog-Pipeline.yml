@@ -1,13 +1,13 @@
 Parameters:
   ConfigRepositoryName:
-    Type: String
-    Default: some-user/aws-enterprise-blueprint-factory-config-repo
+    Default: '/blueprints/resources/ConfigRepo'
+    Type: 'AWS::SSM::Parameter::Value<String>'
   CodeRepositoryName:
-    Type: String
-    Default: some-user/aws-enterprise-blueprint-factory-code-repo
+    Default: '/blueprints/resources/CodeRepo'
+    Type: 'AWS::SSM::Parameter::Value<String>'
   BlueprintRepositoryName:
-    Type: String
-    Default: some-user/aws-enterprise-blueprint-factory-blueprint-repo
+    Default: '/blueprints/resources/BlueprintRepo'
+    Type: 'AWS::SSM::Parameter::Value<String>'
   BranchName:
     Type: String
     Default: main
@@ -39,7 +39,8 @@ Parameters:
     Type: 'AWS::SSM::Parameter::Value<String>'
     ConstraintDescription: 3-63 characters; must contain only lowercase letters or numbers
   CodeConnectionArn:
-    Type: String
+    Default: '/blueprints/resources/CodeConnectionArn'
+    Type: 'AWS::SSM::Parameter::Value<String>'
     Description: The ARN of the CodeConnections GitHub connection
 
 Metadata:
@@ -53,6 +54,7 @@ Metadata:
           - CodeRepositoryName
           - BlueprintRepositoryName
           - BranchName
+          - CodeConnectionArn
       - 
         Label: 
           default: "CodeBuild job"

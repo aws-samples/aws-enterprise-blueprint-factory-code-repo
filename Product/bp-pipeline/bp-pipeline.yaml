@@ -4,14 +4,17 @@ Transform:
 Parameters:
   ProductName:
     Type: String
-  CodeCommitRepoName:
-    Type: String
-    Description: 'Name of the CodeCommit repository'
-    Default: "ServiceCatalog-BlueprintProductRepo"
-  CodeCommitBranchName:
+  BlueprintRepoName:
+    Default: '/blueprints/resources/BlueprintRepo'
+    Type: 'AWS::SSM::Parameter::Value<String>'
+  BranchName:
     Type: String
     Default: 'main'
-    Description: 'Name of the branch in the CodeCommit repository to use as source'
+    Description: 'Name of the branch in the Github repository to use as source'
+  CodeConnectionArn:
+    Default: '/blueprints/resources/CodeConnectionArn'
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Description: The ARN of the CodeConnections GitHub connection    
   DeploymentBucketName:
     Default: '/blueprints/resources/artifacts-bucket-name'
     Type: 'AWS::SSM::Parameter::Value<String>'
@@ -175,19 +178,11 @@ Resources:
                     - !Sub "arn:aws:s3:::${ArtifactBucket}"
                 - Effect: Allow
                   Action:
-                    - codecommit:ListBranches
-                    - codecommit:GetReferences
-                    - codecommit:ListRepositories
-                    - 'codecommit:CancelUploadArchive'
-                    - 'codecommit:GetBranch'
-                    - 'codecommit:GetCommit'
-                    - 'codecommit:GetUploadArchiveStatus'
-                    - 'codecommit:UploadArchive'
+                    - "codeconnections:UseConnection"
+                    - "codestar-connections:UseConnection"
                   Resource:
-                    - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:ServiceCatalog-ConfigRepo'
-                    - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:ServiceCatalog-AdminProductRepo'
-                    - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:ServiceCatalog-CodeRepo'
-                    - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:ServiceCatalog-BlueprintProductRepo'
+                    - !Sub "arn:aws:codeconnections:${AWS::Region}:${AWS::AccountId}:connection/*"
+
   CodeBuildProjectPolicy:
     Type: AWS::IAM::Policy
     Properties:
@@ -546,11 +541,12 @@ Resources:
               ActionTypeId:
                 Category: Source
                 Owner: AWS
-                Provider: CodeCommit
+                Provider: CodeStarSourceConnection
                 Version: '1'
               Configuration:
-                RepositoryName: !Ref CodeCommitRepoName
-                BranchName: !Ref CodeCommitBranchName
+                ConnectionArn: !Ref CodeConnectionArn
+                FullRepositoryId: !Ref BlueprintRepoName
+                BranchName: !Ref BranchName
               OutputArtifacts:
                 - Name: SourceOutput
               RunOrder: 1

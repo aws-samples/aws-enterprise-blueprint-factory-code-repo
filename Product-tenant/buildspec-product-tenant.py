@@ -92,7 +92,7 @@ for conf_product in conf_product_dev_list:
         {'Key':"ProductDescription", "Value":conf_product_description },
         {'Key':"ProductConfigFile","Value":conf_product['product_config_file'] },
         {'Key':"ProductOwner","Value":conf_product['owner']},
-        {'Key':"CodeCommitBranchName", "Value":"main"},        
+        {'Key':"BranchName", "Value":"main"},        
 #        {'Key':"VersionStrategy","Value":conf_product},
 #        {'Key':"EnvironmentType","Value":os.getenv('ENVIRONMENTTYPE')},
         {'Key':"PortfolioIds","Value":PortfolioIds_string}
