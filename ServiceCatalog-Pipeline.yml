@@ -38,10 +38,10 @@ Parameters:
     Default: '/blueprints/resources/artifacts-bucket-name'
     Type: 'AWS::SSM::Parameter::Value<String>'
     ConstraintDescription: 3-63 characters; must contain only lowercase letters or numbers
-  CodeStarConnectionArn:
+  CodeConnectionArn:
     Type: String
     Default: 'arn:aws:codeconnections:us-east-1:831932040055:connection/6b066fb2-9b85-41b3-947f-a3338515d737'
-    Description: The ARN of the CodeStar GitHub connection
+    Description: The ARN of the CodeConnections GitHub connection
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -515,11 +515,11 @@ Resources:
                 Category: Source
                 Owner: AWS
                 Version: 1
-                Provider: CodeStarSourceConnection
+                Provider: CodeSourceConnection
               OutputArtifacts:
                 - Name: CodeOutput
               Configuration:
-                ConnectionArn: !Ref CodeStarConnectionArn
+                ConnectionArn: !Ref CodeConnectionArn
                 FullRepositoryId: !Ref CodeRepositoryName
                 BranchName: !Ref BranchName
                 DetectChanges: true                
@@ -529,11 +529,11 @@ Resources:
                 Category: Source
                 Owner: AWS
                 Version: 1
-                Provider: CodeStarSourceConnection
+                Provider: CodeSourceConnection
               OutputArtifacts:
                 - Name: ConfigOutput
               Configuration:
-                ConnectionArn: !Ref CodeStarConnectionArn
+                ConnectionArn: !Ref CodeConnectionArn
                 FullRepositoryId: !Ref ConfigRepositoryName 
                 BranchName: !Ref BranchName
                 DetectChanges: true
@@ -543,11 +543,11 @@ Resources:
                 Category: Source
                 Owner: AWS
                 Version: 1
-                Provider: CodeStarSourceConnection
+                Provider: CodeSourceConnection
               OutputArtifacts:
                 - Name: BlueprintProductOutput
               Configuration:
-                ConnectionArn: !Ref CodeStarConnectionArn
+                ConnectionArn: !Ref CodeConnectionArn
                 FullRepositoryId: !Ref BlueprintRepositoryName
                 BranchName: 'main'
                 DetectChanges: true
@@ -669,7 +669,7 @@ Resources:
                   - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:*"
               - Effect: Allow
                 Action:
-                  - "codestar-connections:UseConnection"
+                  - "codeconnections:UseConnection"
                 Resource:
                   - !Sub "arn:aws:codeconnections:*"
               - Effect: Allow
