@@ -50,6 +50,8 @@ Metadata:
           default: "Github repository"
         Parameters: 
           - ConfigRepositoryName
+          - CodeRepositoryName
+          - BlueprintRepositoryName
           - BranchName
       - 
         Label: 
@@ -514,7 +516,7 @@ Resources:
                 Category: Source
                 Owner: AWS
                 Version: 1
-                Provider: CodeSourceConnection
+                Provider: CodeStarSourceConnection
               OutputArtifacts:
                 - Name: CodeOutput
               Configuration:
@@ -528,7 +530,7 @@ Resources:
                 Category: Source
                 Owner: AWS
                 Version: 1
-                Provider: CodeSourceConnection
+                Provider: CodeStarSourceConnection
               OutputArtifacts:
                 - Name: ConfigOutput
               Configuration:
@@ -542,7 +544,7 @@ Resources:
                 Category: Source
                 Owner: AWS
                 Version: 1
-                Provider: CodeSourceConnection
+                Provider: CodeStarSourceConnection
               OutputArtifacts:
                 - Name: BlueprintProductOutput
               Configuration:
