@@ -40,7 +40,6 @@ Parameters:
     ConstraintDescription: 3-63 characters; must contain only lowercase letters or numbers
   CodeConnectionArn:
     Type: String
-    Default: 'arn:aws:codeconnections:us-east-1:831932040055:connection/6b066fb2-9b85-41b3-947f-a3338515d737'
     Description: The ARN of the CodeConnections GitHub connection
 
 Metadata:
