@@ -671,8 +671,9 @@ Resources:
               - Effect: Allow
                 Action:
                   - "codeconnections:UseConnection"
+                  - "codestar-connections:UseConnection"
                 Resource:
-                  - !Sub "arn:aws:codeconnections:*"
+                  - !Sub "arn:aws:codeconnections:${AWS::Region}:${AWS::AccountId}:connection/*"
               - Effect: Allow
                 Action:
                   - s3:PutObject
