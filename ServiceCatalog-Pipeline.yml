@@ -250,12 +250,16 @@ Resources:
             Effect: Deny
             Principal: '*'
             Action: 's3:*'
-            Resource: !Join 
-              - ''
-              - - !GetAtt 
-                  - CodePipelineArtifactStoreBucket
-                  - Arn
-                - /*
+            Resource:
+              - !GetAtt
+                - CodePipelineArtifactStoreBucket
+                - Arn
+              - !Join
+                - ''
+                - - !GetAtt
+                    - CodePipelineArtifactStoreBucket
+                    - Arn
+                  - /*
             Condition:
               Bool:
                 'aws:SecureTransport': false
