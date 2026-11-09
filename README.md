@@ -124,6 +124,10 @@ Cam Maxwell
 * 0.1
     * Initial Release
 
+## Disclaimer
+
+This is sample code, for non-production usage. It is provided as-is, without warranty of any kind. Review and test it, and work with your security and legal teams to meet your organization's security, regulatory, and compliance requirements, before you deploy it in a production environment. Deploying this solution creates AWS resources that incur charges in your AWS account.
+
 ## Security
 
 See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
