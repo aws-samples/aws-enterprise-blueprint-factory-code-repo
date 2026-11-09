@@ -569,7 +569,9 @@ Resources:
             Effect: Allow
             Action:
               - ssm:GetParameter
+              - ssm:GetParametersByPath
               - ssm:DeleteParameter
+              - ssm:DeleteParameters
             Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/blueprints/service-catalog/${EnvironmentType}/*'
           - Sid: RemoveAdminPortfolioAndProduct
             Effect: Allow
@@ -1314,6 +1316,21 @@ Resources:
             import time
 
             response_data = {}
+
+            def delete_parameters(ssm_client, path):
+              # Delete the parameter at path and every parameter below it (ids and versions are stored as children)
+              names = []
+              for page in ssm_client.get_paginator('get_parameters_by_path').paginate(Path=path, Recursive=True):
+                names += [p['Name'] for p in page['Parameters']]
+              try:
+                ssm_client.get_parameter(Name=path)
+                names.append(path)
+              except ssm_client.exceptions.ParameterNotFound:
+                pass
+              for i in range(0, len(names), 10):
+                ssm_client.delete_parameters(Names=names[i:i + 10])
+              print("Deleted {} parameters under {}".format(len(names), path))
+
             def lambda_handler(event, context):
               print(event)
               try:
@@ -1343,15 +1360,13 @@ Resources:
                   servicecatalog_client.delete_portfolio(Id=ssm_portfolio_id)
                   print("Deleted portfolio {}".format(ssm_portfolio_id))
 
-                  print("Deleting /blueprints/service-catalog/{}/Portfolio/Bootstrapping-Admin-Portfolio".format(os.getenv('ENVIRONMENTTYPE')))
-                  ssm_client.delete_parameter(Name="/blueprints/service-catalog/{}/Portfolio/Bootstrapping-Admin-Portfolio".format(os.getenv('ENVIRONMENTTYPE')))
-                  print("Deleted /blueprints/service-catalog/{}/Portfolio/Bootstrapping-Admin-Portfolio".format(os.getenv('ENVIRONMENTTYPE')))
+                  delete_parameters(ssm_client, "/blueprints/service-catalog/{}/Portfolio/Bootstrapping-Admin-Portfolio".format(os.getenv('ENVIRONMENTTYPE')))
 
                   print("Getting /blueprints/service-catalog/{}/AdminProduct/Bootstrapping-Admin-Product/product-id".format(os.getenv('ENVIRONMENTTYPE')))
                   ssm_product_id = ssm_client.get_parameter(Name="/blueprints/service-catalog/{}/AdminProduct/Bootstrapping-Admin-Product/product-id".format(os.getenv('ENVIRONMENTTYPE')),WithDecryption=True)['Parameter']['Value']
                   servicecatalog_client.delete_product(Id=ssm_product_id )
                   print("Deleted product {} ".format(ssm_product_id))
-                  ssm_client.delete_parameter(Name="/blueprints/service-catalog/{}/AdminProduct/Bootstrapping-Admin-Product".format(os.getenv('ENVIRONMENTTYPE')))
+                  delete_parameters(ssm_client, "/blueprints/service-catalog/{}/AdminProduct/Bootstrapping-Admin-Product".format(os.getenv('ENVIRONMENTTYPE')))
 
 
                   response_data['message'] = "Deleted product Bootstrapping-Admin-Product and portfolio Bootstrapping-Admin-Portfolio successfully"
