@@ -194,7 +194,7 @@ for conf_product in conf_product_dev_admin_list:
             [
                 AWS_CLI, "cloudformation", "package",
                 "--region", os.getenv("AWS_REGION"),
-                "--template-file", "{}/{}".format(os.getenv("CODEBUILD_SRC_DIR"),tmp1_product_template),
+                "--template-file", "{}/Product/{}".format(os.getenv("CODEBUILD_SRC_DIR"),tmp1_product_template),
                 "--s3-bucket", os.getenv("ARTIFACT_BUCKET"),
                 "--s3-prefix", "resource/{}/{}".format(conf_product['name'],tmp1_product_version),
                 "--output-template-file", "product-{}-{}.yml".format(conf_product['name'],tmp1_product_version)
@@ -213,7 +213,7 @@ for conf_product in conf_product_dev_admin_list:
                     'Name': tmp1_product_version,
                     'Description': tmp1_product_version_description,
                     'Info': {
-                        'LoadTemplateFromURL': 'https://{}.s3.amazonaws.com/product-{}-{}.yml'.format(os.getenv("ARTIFACT_BUCKET"),conf_product['name'],tmp1_product_version),
+                        'LoadTemplateFromURL': tmp1_LoadTemplateFromURL,
                     },
                     'Type': 'CLOUD_FORMATION_TEMPLATE'
                 }
