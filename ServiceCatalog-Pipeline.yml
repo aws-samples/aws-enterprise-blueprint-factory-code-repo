@@ -280,6 +280,26 @@ Resources:
             Condition:
               StringEquals:
                 'aws:RequestedRegion': !Ref 'AWS::Region'
+          # Service Catalog validates product templates with the caller's credentials (CreateProduct,
+          # CreateProvisioningArtifact). Read-only actions without resource-level permissions.
+          - Sid: ValidateProductTemplates
+            Effect: Allow
+            Action:
+              - cloudformation:ValidateTemplate
+              - cloudformation:GetTemplateSummary
+            Resource: '*'
+          # Service Catalog verifies that IAM principals exist (with the caller's credentials) when
+          # associating them with a portfolio
+          - Sid: ReadPortfolioPrincipals
+            Effect: Allow
+            Action:
+              - iam:GetRole
+              - iam:GetUser
+              - iam:GetGroup
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:user/*'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:group/*'
           # Read-only lookups Service Catalog performs when sharing portfolios with an AWS Organization
           - Sid: ReadOrganizationForPortfolioShares
             Effect: Allow

@@ -1,8 +1,8 @@
 {
     "SchemaVersion": "1.0",
-    "ProductVersionName": "1.0.0",
+    "ProductVersionName": "1.0.1",
     "Deprecated_Versions" : [],
-    "ProductVersionDescription": "Initial version of the bp pipeline product",
+    "ProductVersionDescription": "Least-privilege hardening, CodeBuild standard:7.0 image and Ruby 3.3 for cfn-nag",
     "ProductType": "CLOUD_FORMATION_TEMPLATE",
     "Properties": {
         "TemplateFilePath": "bp-pipeline/bp-pipeline.yaml"
