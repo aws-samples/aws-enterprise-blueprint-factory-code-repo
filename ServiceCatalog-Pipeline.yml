@@ -24,9 +24,12 @@ Parameters:
   SecurityGroupIds:
     Type: 'AWS::SSM::Parameter::Value<List<String>>'
     Default: '/blueprints/resources/securitygroups'
-  IamRoleName:
+  BlueprintLaunchRoleNamePattern:
     Type: String
-    Default: codebuild-servicecatalog-admin-role
+    Default: 'ServiceCatalogLaunchConstraintRole*'
+    Description: >-
+      IAM role name (or name pattern) of the launch constraint roles referenced by launch_contraint_role in bp_config.yml.
+      The pipeline is allowed to pass only these roles to Service Catalog.
   EnvironmentType:
     Type: String
     Default: DEV
@@ -63,9 +66,8 @@ Metadata:
           - VPCID
           - Subnets
           - SecurityGroupIds  
-          - IamRoleName
+          - BlueprintLaunchRoleNamePattern
           - ArtifactBucket
-          - ArtifactKmsKeyID
     ParameterLabels:
       ConfigRepositoryName:
         default: Configuration Repository name
@@ -77,11 +79,16 @@ Metadata:
         default: Subnets
       SecurityGroupIds:
         default: Security Group
-      IamRoleName:
-        default: CodeBuild Service Role Name
+      BlueprintLaunchRoleNamePattern:
+        default: Blueprint launch constraint role name pattern
       ArtifactBucket:
         default: Artifact S3 bucket
 Resources:
+  ##########################################################################
+  # IAM - each principal gets its own least-privilege role.
+  # Previously a single, manually created role was shared by CodeBuild, the
+  # Service Catalog launch constraint and the cleanup Lambda function.
+  ##########################################################################
   rTransformExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -92,29 +99,515 @@ Resources:
             Principal:
               Service: [lambda.amazonaws.com]
             Action: ['sts:AssumeRole']
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
       Path: /
-      Policies:
-        - PolicyName: LogPermissionsForLambda
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource:
-                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
-              - Effect: Allow
-                Action:
-                  - ec2:CreateNetworkInterface
-                  - ec2:Describe*
-                Resource: "*"
-              - Effect: Allow
-                Action:
-                  - ec2:DeleteNetworkInterface
-                Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:*'
+  rTransformExecutionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Permissions for the ReplicateWith CloudFormation macro function
+      Roles:
+        - !Ref rTransformExecutionRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: WriteFunctionLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !GetAtt rTransformFunctionLogGroup.Arn
+          # Describe calls do not support resource-level permissions
+          - Sid: DescribeVpcResources
+            Effect: Allow
+            Action:
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeSubnets
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeVpcs
+            Resource: '*'
+          # ENI management required for a VPC-attached Lambda function, scoped to this account and Region
+          - Sid: ManageFunctionNetworkInterfaces
+            Effect: Allow
+            Action:
+              - ec2:CreateNetworkInterface
+              - ec2:DeleteNetworkInterface
+              - ec2:AssignPrivateIpAddresses
+              - ec2:UnassignPrivateIpAddresses
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*'
+
+  # Service role for the CodeBuild projects that run the Portfolio, Portfolio-shares,
+  # Product and Product-tenant scripts.
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Service role for the Blueprint Factory CodeBuild projects
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      Path: /
+  CodeBuildServicePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: >-
+              The Service Catalog actions in statement ServiceCatalogActionsWithoutResourceLevelPermissions do not
+              support resource-level permissions (see the Service Authorization Reference), so they require
+              Resource '*'. They are limited to this Region with aws:RequestedRegion.
+    Properties:
+      Description: Least-privilege permissions for the Blueprint Factory CodeBuild projects
+      Roles:
+        - !Ref CodeBuildServiceRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: WriteBuildLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !GetAtt CodeBuildProjectLogGroup.Arn
+          # Required for CodeBuild projects that run inside a VPC
+          - Sid: DescribeVpcResources
+            Effect: Allow
+            Action:
+              - ec2:DescribeDhcpOptions
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeSubnets
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeVpcs
+            Resource: '*'
+          - Sid: ManageBuildNetworkInterfaces
+            Effect: Allow
+            Action:
+              - ec2:CreateNetworkInterface
+              - ec2:DeleteNetworkInterface
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*'
+          - Sid: AuthorizeCodeBuildNetworkInterfaces
+            Effect: Allow
+            Action: ec2:CreateNetworkInterfacePermission
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*'
+            Condition:
+              StringEquals:
+                'ec2:AuthorizedService': codebuild.amazonaws.com
+          - Sid: PipelineArtifacts
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:PutObject
+              - s3:GetBucketAcl
+              - s3:GetBucketLocation
+            Resource:
+              - !GetAtt CodePipelineArtifactStoreBucket.Arn
+              - !Sub '${CodePipelineArtifactStoreBucket.Arn}/*'
+          # Packaged product templates (aws cloudformation package and template uploads)
+          - Sid: ProductTemplateBucket
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
+              - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/*'
+          - Sid: BlueprintParameters
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+              - ssm:GetParametersByPath
+              - ssm:PutParameter
+              - ssm:DeleteParameter
+            Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/blueprints/*'
+          - Sid: ServiceCatalogPortfolioAndProductAdministration
+            Effect: Allow
+            Action:
+              - servicecatalog:AssociatePrincipalWithPortfolio
+              - servicecatalog:AssociateTagOptionWithResource
+              - servicecatalog:CreateConstraint
+              - servicecatalog:CreatePortfolio
+              - servicecatalog:CreatePortfolioShare
+              - servicecatalog:CreateProduct
+              - servicecatalog:CreateProvisioningArtifact
+              - servicecatalog:DeletePortfolio
+              - servicecatalog:DeletePortfolioShare
+              - servicecatalog:DeleteProduct
+              - servicecatalog:DescribePortfolio
+              - servicecatalog:DescribePortfolioShares
+              - servicecatalog:DescribeProduct
+              - servicecatalog:DescribeProductAsAdmin
+              - servicecatalog:DescribeProvisioningArtifact
+              - servicecatalog:DisassociatePrincipalFromPortfolio
+              - servicecatalog:DisassociateTagOptionFromResource
+              - servicecatalog:ListLaunchPaths
+              - servicecatalog:ListPortfoliosForProduct
+              - servicecatalog:ListPrincipalsForPortfolio
+              - servicecatalog:ListProvisioningArtifacts
+              - servicecatalog:ProvisionProduct
+              - servicecatalog:UpdatePortfolio
+              - servicecatalog:UpdateProduct
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:catalog:${AWS::Region}:${AWS::AccountId}:portfolio/*'
+              - !Sub 'arn:${AWS::Partition}:catalog:${AWS::Region}:${AWS::AccountId}:product/*'
+          - Sid: ServiceCatalogActionsWithoutResourceLevelPermissions
+            Effect: Allow
+            Action:
+              - servicecatalog:AssociateProductWithPortfolio
+              - servicecatalog:DeleteTagOption
+              - servicecatalog:DescribeProvisionedProduct
+              - servicecatalog:DescribeRecord
+              - servicecatalog:DisassociateProductFromPortfolio
+              - servicecatalog:ListPortfolios
+              - servicecatalog:ListTagOptions
+              - servicecatalog:SearchProductsAsAdmin
+              - servicecatalog:SearchProvisionedProducts
+              - servicecatalog:TerminateProvisionedProduct
+              - servicecatalog:UpdateProvisionedProduct
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref 'AWS::Region'
+          # Read-only lookups Service Catalog performs when sharing portfolios with an AWS Organization
+          - Sid: ReadOrganizationForPortfolioShares
+            Effect: Allow
+            Action:
+              - organizations:DescribeOrganization
+              - organizations:DescribeAccount
+              - organizations:ListAWSServiceAccessForOrganization
+            Resource: '*'
+          # Launch constraints: only the bootstrap launch role and the configured blueprint launch roles,
+          # and only to Service Catalog
+          - Sid: PassLaunchConstraintRoles
+            Effect: Allow
+            Action: iam:PassRole
+            Resource:
+              - !GetAtt BootstrapLaunchRole.Arn
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${BlueprintLaunchRoleNamePattern}'
+            Condition:
+              StringEquals:
+                'iam:PassedToService': servicecatalog.amazonaws.com
+
+  # Launch constraint role for the Bootstrapping-Admin-Product. Service Catalog assumes this role
+  # to provision the blueprint release pipeline stack (Product/bp-pipeline/bp-pipeline.yaml).
+  # Service Catalog names those stacks SC-<account>-pp-<id>, so CloudFormation-generated
+  # resource names start with "SC-".
+  BootstrapLaunchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Service Catalog launch role for the Blueprint Factory admin product
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: servicecatalog.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      Path: /
+  BootstrapLaunchPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: >-
+              servicecatalog:AssociateProductWithPortfolio and DisassociateProductFromPortfolio do not support
+              resource-level permissions, so they require Resource '*'. They are limited to this Region with
+              aws:RequestedRegion.
+    Properties:
+      Description: Least-privilege permissions to provision the blueprint release pipeline stack
+      Roles:
+        - !Ref BootstrapLaunchRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: ManageProvisionedStacks
+            Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackEvents
+              - cloudformation:ListStackResources
+              - cloudformation:SetStackPolicy
+              - cloudformation:CreateChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:ListChangeSets
+              - cloudformation:TagResource
+              - cloudformation:UntagResource
+            Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:*'
+          - Sid: ValidateTemplates
+            Effect: Allow
+            Action:
+              - cloudformation:ValidateTemplate
+              - cloudformation:GetTemplateSummary
+            Resource: '*'
+          # Templates staged by Service Catalog (see "Launch constraint" in the Service Catalog Administrator Guide)
+          - Sid: ReadServiceCatalogStagedTemplates
+            Effect: Allow
+            Action: s3:GetObject
+            Resource: '*'
+            Condition:
+              StringEquals:
+                's3:ExistingObjectTag/servicecatalog:provisioning': 'true'
+          - Sid: ReadProductTemplates
+            Effect: Allow
+            Action: s3:GetObject
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/*'
+          - Sid: InvokeReplicateWithMacro
+            Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource: !GetAtt rTransformFunction.Arn
+          - Sid: ManagePipelineRoles
+            Effect: Allow
+            Action:
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:GetRole
+              - iam:TagRole
+              - iam:UntagRole
+              - iam:UpdateAssumeRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:GetRolePolicy
+              - iam:ListRolePolicies
+              - iam:ListAttachedRolePolicies
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/SC-*'
+          - Sid: PassPipelineRoles
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/SC-*'
+            Condition:
+              StringEquals:
+                'iam:PassedToService':
+                  - codebuild.amazonaws.com
+                  - codepipeline.amazonaws.com
+          - Sid: ManageBuildProjects
+            Effect: Allow
+            Action:
+              - codebuild:CreateProject
+              - codebuild:UpdateProject
+              - codebuild:DeleteProject
+              - codebuild:BatchGetProjects
+            Resource: !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/*'
+          - Sid: ManagePipelines
+            Effect: Allow
+            Action:
+              - codepipeline:CreatePipeline
+              - codepipeline:UpdatePipeline
+              - codepipeline:DeletePipeline
+              - codepipeline:GetPipeline
+              - codepipeline:GetPipelineState
+              - codepipeline:TagResource
+              - codepipeline:UntagResource
+              - codepipeline:ListTagsForResource
+            Resource: !Sub 'arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:BluePrint_*'
+          - Sid: PassSourceConnection
+            Effect: Allow
+            Action:
+              - codeconnections:PassConnection
+              - codeconnections:UseConnection
+              - codestar-connections:PassConnection
+              - codestar-connections:UseConnection
+            Resource: !Ref CodeConnectionArn
+          - Sid: DescribeLogGroups
+            Effect: Allow
+            Action: logs:DescribeLogGroups
+            Resource: '*'
+          - Sid: ManagePipelineLogGroups
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:DeleteLogGroup
+              - logs:PutRetentionPolicy
+              - logs:DeleteRetentionPolicy
+              - logs:TagResource
+              - logs:UntagResource
+              - logs:TagLogGroup
+              - logs:ListTagsForResource
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:SC-*'
+          - Sid: ManageBlueprintParameters
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+              - ssm:PutParameter
+              - ssm:DeleteParameter
+              - ssm:AddTagsToResource
+              - ssm:RemoveTagsFromResource
+            Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/blueprints/*'
+          - Sid: DescribeParameters
+            Effect: Allow
+            Action: ssm:DescribeParameters
+            Resource: '*'
+          - Sid: ManageBlueprintProducts
+            Effect: Allow
+            Action:
+              - servicecatalog:CreateProduct
+              - servicecatalog:UpdateProduct
+              - servicecatalog:DeleteProduct
+              - servicecatalog:DescribeProductAsAdmin
+              - servicecatalog:CreateProvisioningArtifact
+              - servicecatalog:DeleteProvisioningArtifact
+              - servicecatalog:DescribeProvisioningArtifact
+              - servicecatalog:UpdateProvisioningArtifact
+              - servicecatalog:ListProvisioningArtifacts
+              - servicecatalog:ListPortfoliosForProduct
+            Resource: !Sub 'arn:${AWS::Partition}:catalog:${AWS::Region}:${AWS::AccountId}:product/*'
+          - Sid: ManageProductPortfolioAssociations
+            Effect: Allow
+            Action:
+              - servicecatalog:AssociateProductWithPortfolio
+              - servicecatalog:DisassociateProductFromPortfolio
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref 'AWS::Region'
+          # CodeBuild validates the VPC configuration of the pipeline's build projects
+          - Sid: DescribeVpcResources
+            Effect: Allow
+            Action:
+              - ec2:DescribeSubnets
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeVpcs
+            Resource: '*'
+
+  # Role for the cleanup custom resource that removes the admin product and portfolio on stack deletion
+  CleanupFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Execution role for the Blueprint Factory cleanup function
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+      Path: /
+  CleanupFunctionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: >-
+              servicecatalog:DisassociateProductFromPortfolio does not support resource-level permissions, so it
+              requires Resource '*'. It is limited to this Region with aws:RequestedRegion.
+    Properties:
+      Description: Permissions for the Blueprint Factory cleanup function
+      Roles:
+        - !Ref CleanupFunctionRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: WriteFunctionLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !GetAtt CleanupFunctionLogGroup.Arn
+          - Sid: DescribeVpcResources
+            Effect: Allow
+            Action:
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeSubnets
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeVpcs
+            Resource: '*'
+          - Sid: ManageFunctionNetworkInterfaces
+            Effect: Allow
+            Action:
+              - ec2:CreateNetworkInterface
+              - ec2:DeleteNetworkInterface
+              - ec2:AssignPrivateIpAddresses
+              - ec2:UnassignPrivateIpAddresses
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*'
+          - Sid: RemoveAdminParameters
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:DeleteParameter
+            Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/blueprints/service-catalog/${EnvironmentType}/*'
+          - Sid: RemoveAdminPortfolioAndProduct
+            Effect: Allow
+            Action:
+              - servicecatalog:ListPrincipalsForPortfolio
+              - servicecatalog:DisassociatePrincipalFromPortfolio
+              - servicecatalog:DeletePortfolio
+              - servicecatalog:DeleteProduct
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:catalog:${AWS::Region}:${AWS::AccountId}:portfolio/*'
+              - !Sub 'arn:${AWS::Partition}:catalog:${AWS::Region}:${AWS::AccountId}:product/*'
+          - Sid: DisassociateAdminProduct
+            Effect: Allow
+            Action: servicecatalog:DisassociateProductFromPortfolio
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': !Ref 'AWS::Region'
+  CleanupFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_158
+            comment: Log data is encrypted at rest by CloudWatch Logs by default. Add KmsKeyId if your organization requires a customer managed key.
+      guard:
+        SuppressedRules:
+          - CLOUDWATCH_LOG_GROUP_ENCRYPTED
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-admin-product-portfolio-cleanup
+      RetentionInDays: 365
+  rTransformFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_158
+            comment: Log data is encrypted at rest by CloudWatch Logs by default. Add KmsKeyId if your organization requires a customer managed key.
+      guard:
+        SuppressedRules:
+          - CLOUDWATCH_LOG_GROUP_ENCRYPTED
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-replication-macro
+      RetentionInDays: 365
   rTransformFunction:
     Type: AWS::Lambda::Function
+    DependsOn: rTransformExecutionPolicy
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_115
+            comment: CloudFormation macro invoked synchronously and only at deploy time; reserving concurrency would take capacity from the account's unreserved pool.
+          - id: CKV_AWS_116
+            comment: Invoked synchronously by CloudFormation; failures are returned to the stack operation, so a dead-letter queue would never receive events.
+      guard:
+        SuppressedRules:
+          - LAMBDA_CONCURRENCY_CHECK
+          - LAMBDA_DLQ_CHECK
     Properties:
       FunctionName: !Sub ${AWS::StackName}-replication-macro
       MemorySize: 128
@@ -209,6 +702,8 @@ Resources:
       Action: 'lambda:InvokeFunction'
       FunctionName: !GetAtt rTransformFunction.Arn
       Principal: 'cloudformation.amazonaws.com'
+      # Prevent cross-account (confused deputy) invocation through the CloudFormation service principal
+      SourceAccount: !Ref 'AWS::AccountId'
   rTransform:
     Type: AWS::CloudFormation::Macro
     Properties:
@@ -217,17 +712,112 @@ Resources:
       FunctionName: !GetAtt rTransformFunction.Arn
   CodeBuildProjectLogGroup:
     Type: AWS::Logs::LogGroup
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_158
+            comment: Log data is encrypted at rest by CloudWatch Logs by default. Add KmsKeyId if your organization requires a customer managed key.
+      guard:
+        SuppressedRules:
+          - CLOUDWATCH_LOG_GROUP_ENCRYPTED
+    Properties:
+      RetentionInDays: 365
     UpdateReplacePolicy: Retain
     DeletionPolicy: Retain
+  AccessLogsBucket:
+    Type: 'AWS::S3::Bucket'
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: This bucket is the server access logging destination; logging it to itself would cause a loop.
+      guard:
+        SuppressedRules:
+          - S3_BUCKET_LOGGING_ENABLED
+          - S3_DEFAULT_ENCRYPTION_KMS
+          - S3_BUCKET_DEFAULT_LOCK_ENABLED
+          - S3_BUCKET_REPLICATION_ENABLED  # cross-Region replication is a customer DR decision, out of scope for this sample
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: This bucket is the server access logging destination.
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      # S3 server access logging only supports SSE-S3 on the destination bucket.
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+  AccessLogsBucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Metadata:
+      guard:
+        SuppressedRules:
+          - S3_BUCKET_SSL_REQUESTS_ONLY  # DenyInsecureConnections denies all s3:* over non-TLS on the bucket and its objects
+    Properties:
+      Bucket: !Ref AccessLogsBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowS3ServerAccessLogging
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: 's3:PutObject'
+            Resource: !Sub '${AccessLogsBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
+          - Sid: DenyInsecureConnections
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt AccessLogsBucket.Arn
+              - !Sub '${AccessLogsBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
   CodePipelineArtifactStoreBucket:
     Type: 'AWS::S3::Bucket'
-    Properties: 
-      BucketEncryption: 
-        ServerSideEncryptionConfiguration: 
+    Metadata:
+      guard:
+        SuppressedRules:
+          - S3_BUCKET_REPLICATION_ENABLED   # pipeline artifacts are transient and reproducible from source
+          - S3_BUCKET_DEFAULT_LOCK_ENABLED  # pipeline artifacts are transient; versioning protects against overwrites
+          - S3_BUCKET_NO_PUBLIC_RW_ACL      # public ACLs are blocked and ignored by PublicAccessBlockConfiguration
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
         - ServerSideEncryptionByDefault:
-            SSEAlgorithm: AES256    
+            SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: codepipeline-artifacts/
   CodePipelineArtifactStoreBucketPolicy:
     Type: 'AWS::S3::BucketPolicy'
+    Metadata:
+      guard:
+        SuppressedRules:
+          - S3_BUCKET_SSL_REQUESTS_ONLY  # DenyInsecureConnections denies all s3:* over non-TLS on the bucket and its objects
     Properties:
       Bucket: !Ref CodePipelineArtifactStoreBucket
       PolicyDocument:
@@ -265,6 +855,11 @@ Resources:
                 'aws:SecureTransport': false
   ServiceCatalogPortfolioCodeBuildProject:
     Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildServicePolicy
+    Metadata:
+      guard:
+        SuppressedRules:
+          - CODEBUILD_ENCRYPTION_KEY_RULE
     Properties:
       Artifacts:
         Type: CODEPIPELINE
@@ -283,18 +878,8 @@ Resources:
             Value: !Ref EnvironmentType
           - Name: "ServiceCatalogAdminRole"
             Type: PLAINTEXT
-            Value: !Join 
-                  - ''
-                  - - 'arn:aws:iam::'
-                    - !Ref 'AWS::AccountId'
-                    - ':role/'
-                    - !Ref IamRoleName
-      ServiceRole: !Join 
-                  - ''
-                  - - 'arn:aws:iam::'
-                    - !Ref 'AWS::AccountId'
-                    - ':role/'
-                    - !Ref IamRoleName
+            Value: !GetAtt CodeBuildServiceRole.Arn
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
       Source:
         Type: CODEPIPELINE
         BuildSpec: !Sub |
@@ -327,6 +912,11 @@ Resources:
         VpcId: !Ref VPCID
   ServiceCatalogPortfolioSharesCodeBuildProject:
     Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildServicePolicy
+    Metadata:
+      guard:
+        SuppressedRules:
+          - CODEBUILD_ENCRYPTION_KEY_RULE
     Properties:
       Artifacts:
         Type: CODEPIPELINE
@@ -345,18 +935,8 @@ Resources:
             Value: !Ref EnvironmentType
           - Name: "ServiceCatalogAdminRole"
             Type: PLAINTEXT
-            Value: !Join 
-                  - ''
-                  - - 'arn:aws:iam::'
-                    - !Ref 'AWS::AccountId'
-                    - ':role/'
-                    - !Ref IamRoleName
-      ServiceRole: !Join 
-                  - ''
-                  - - 'arn:aws:iam::'
-                    - !Ref 'AWS::AccountId'
-                    - ':role/'
-                    - !Ref IamRoleName
+            Value: !GetAtt CodeBuildServiceRole.Arn
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
       Source:
         Type: CODEPIPELINE
         BuildSpec: !Sub |
@@ -387,6 +967,11 @@ Resources:
         VpcId: !Ref VPCID
   ServiceCatalogProductCodeBuildProject:
     Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildServicePolicy
+    Metadata:
+      guard:
+        SuppressedRules:
+          - CODEBUILD_ENCRYPTION_KEY_RULE
     Properties:
       Artifacts:
         Type: CODEPIPELINE
@@ -408,18 +993,11 @@ Resources:
             Value: !Ref ArtifactBucket
           - Name: ServiceCatalogAdminRole
             Type: PLAINTEXT
-            Value: !Join 
-                  - ''
-                  - - 'arn:aws:iam::'
-                    - !Ref 'AWS::AccountId'
-                    - ':role/'
-                    - !Ref IamRoleName
-      ServiceRole: !Join 
-                  - ''
-                  - - 'arn:aws:iam::'
-                    - !Ref 'AWS::AccountId'
-                    - ':role/'
-                    - !Ref IamRoleName
+            Value: !GetAtt CodeBuildServiceRole.Arn
+          - Name: ServiceCatalogLaunchRole
+            Type: PLAINTEXT
+            Value: !GetAtt BootstrapLaunchRole.Arn
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
       Source:
         Type: CODEPIPELINE
         BuildSpec: !Sub |
@@ -453,6 +1031,11 @@ Resources:
         VpcId: !Ref VPCID
   ServiceCatalogProductTenantCodeBuildProject:
     Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildServicePolicy
+    Metadata:
+      guard:
+        SuppressedRules:
+          - CODEBUILD_ENCRYPTION_KEY_RULE
     Properties:
       Artifacts:
         Type: CODEPIPELINE
@@ -472,12 +1055,7 @@ Resources:
           - Name: "ARTIFACT_BUCKET"
             Type: PLAINTEXT
             Value: !Ref ArtifactBucket
-      ServiceRole: !Join 
-                  - ''
-                  - - 'arn:aws:iam::'
-                    - !Ref 'AWS::AccountId'
-                    - ':role/'
-                    - !Ref IamRoleName
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
       Source:
         Type: CODEPIPELINE
         BuildSpec: !Sub |
@@ -509,6 +1087,7 @@ Resources:
 
   AppPipeline:
     Type: 'AWS::CodePipeline::Pipeline'
+    DependsOn: CodePipelineServicePolicy
     Properties:
       Name: ServiceCatalog-Pipeline
       RoleArn: !GetAtt 
@@ -647,79 +1226,64 @@ Resources:
               Service:
                 - codepipeline.amazonaws.com
             Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'aws:SourceAccount': !Ref 'AWS::AccountId'
       Path: /
-      Policies:
-        - PolicyName: AWS-CodePipeline-Service-3
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'codedeploy:CreateDeployment'
-                  - 'codedeploy:GetApplicationRevision'
-                  - 'codedeploy:GetDeployment'
-                  - 'codedeploy:GetDeploymentConfig'
-                  - 'codedeploy:RegisterApplicationRevision'
-                Resource:
-                  - !Sub "arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:*"
-              - Effect: Allow
-                Action:
-                  - 'codebuild:BatchGetBuilds'
-                  - 'codebuild:StartBuild'
-                Resource:
-                  - !Sub "arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:*"
-              - Effect: Allow
-                Action:
-                  - 'lambda:InvokeFunction'
-                  - 'lambda:ListFunctions'
-                Resource:
-                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:*"
-              - Effect: Allow
-                Action:
-                  - "codeconnections:UseConnection"
-                  - "codestar-connections:UseConnection"
-                Resource:
-                  - !Sub "arn:aws:codeconnections:${AWS::Region}:${AWS::AccountId}:connection/*"
-              - Effect: Allow
-                Action:
-                  - s3:PutObject
-                  - s3:GetBucketPolicy
-                  - s3:GetObject
-                  - s3:ListBucket
-                  - s3:PutObjectAcl
-                  - s3:GetObjectAcl
-                  - s3:GetBucketVersioning
-                Resource:
-                  - !Sub "arn:aws:s3:::${ArtifactBucket}/*"
-                  - !Sub "arn:aws:s3:::${ArtifactBucket}"
-                  - !Join
-                    - ''
-                    - - !GetAtt 
-                        - CodePipelineArtifactStoreBucket
-                        - Arn
-                      - /*
-
-              # - Effect: Allow
-              #   Action:
-              #     - 'iam:PassRole'
-              #   Resource: '*'
-              #   Condition:
-              #     StringEqualsIfExists:
-              #       iam:PassedToService:
-              #       - cloudformation.amazonaws.com
-              #       - s3.amazonaws.com
-              #       - ec2.amazonaws.com                
-              #       - servicecatalog.amazonaws.com                
-              # - Effect: Allow
-              #   Action:
-              #     - 'cloudwatch:*'
-              #     - 's3:*'
-              #     - 'sns:*'
-              #     - 'cloudformation:*'
-              #   Resource: '*'
+  CodePipelineServicePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Least-privilege permissions for the ServiceCatalog-Pipeline
+      Roles:
+        - !Ref CodePipelineServiceRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: RunBuildStages
+            Effect: Allow
+            Action:
+              - 'codebuild:BatchGetBuilds'
+              - 'codebuild:StartBuild'
+            Resource:
+              - !GetAtt ServiceCatalogPortfolioCodeBuildProject.Arn
+              - !GetAtt ServiceCatalogPortfolioSharesCodeBuildProject.Arn
+              - !GetAtt ServiceCatalogProductCodeBuildProject.Arn
+              - !GetAtt ServiceCatalogProductTenantCodeBuildProject.Arn
+          - Sid: UseSourceConnection
+            Effect: Allow
+            Action:
+              - 'codeconnections:UseConnection'
+              - 'codestar-connections:UseConnection'
+            Resource: !Ref CodeConnectionArn
+          - Sid: PipelineArtifacts
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:PutObject
+              - s3:GetBucketVersioning
+              - s3:GetBucketLocation
+              - s3:ListBucket
+            Resource:
+              - !GetAtt CodePipelineArtifactStoreBucket.Arn
+              - !Sub '${CodePipelineArtifactStoreBucket.Arn}/*'
 
   cCleanup:
       Type: AWS::Lambda::Function
+      DependsOn: CleanupFunctionPolicy
+      Metadata:
+        checkov:
+          skip:
+            - id: CKV_AWS_115
+              comment: Runs once, on stack deletion; reserving concurrency would take capacity from the account's unreserved pool.
+            - id: CKV_AWS_116
+              comment: CloudFormation custom resource; failures are reported to the stack operation, not retried from a queue.
+            - id: CKV_AWS_173
+              comment: Environment variables contain only the environment type and stack name, no sensitive data. They are encrypted at rest with the AWS managed key by default.
+        guard:
+          SuppressedRules:
+            - LAMBDA_CONCURRENCY_CHECK
+            - LAMBDA_DLQ_CHECK
       Properties:
         Code:
           ZipFile: |
@@ -783,13 +1347,16 @@ Resources:
           Variables:
             ENVIRONMENTTYPE: !Ref EnvironmentType
             STACKNAME: !Ref 'AWS::StackName'
-        Role: !Join 
-                    - ''
-                    - - 'arn:aws:iam::'
-                      - !Ref 'AWS::AccountId'
-                      - ':role/'
-                      - !Ref IamRoleName
+        Role: !GetAtt CleanupFunctionRole.Arn
+        VpcConfig:
+          SecurityGroupIds: !Ref SecurityGroupIds
+          SubnetIds:
+            - !Select [ 0, !Ref Subnets ]
   cleanupAdmin:
     Type: Custom::cleanupAdmin
+    # Keep the function's permissions and log group until the cleanup has run on stack deletion
+    DependsOn:
+      - CleanupFunctionPolicy
+      - CleanupFunctionLogGroup
     Properties:
       ServiceToken: !GetAtt cCleanup.Arn

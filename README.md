@@ -63,6 +63,31 @@ git remote add origin git@github.com:ServiceCatalog-BlueprintProductRepo
 git push origin main
 ```
 
+### IAM roles
+
+`ServiceCatalog-Pipeline.yml` creates every IAM role the Blueprint Factory needs. You don't need to create a CodeBuild or Service Catalog admin role manually, and you don't need to edit any trust policies. Each role trusts only one AWS service, and only on behalf of the account the stack is deployed in (`aws:SourceAccount`):
+
+| Role | Trusted service | Purpose |
+|---|---|---|
+| `CodeBuildServiceRole` | `codebuild.amazonaws.com` | Runs the Portfolio, Portfolio-shares, Product, and Product-tenant scripts. It manages Service Catalog portfolios and products, reads and writes `/blueprints/*` SSM parameters, and can pass only the launch constraint roles to Service Catalog. |
+| `BootstrapLaunchRole` | `servicecatalog.amazonaws.com` | The launch constraint role for `Bootstrapping-Admin-Product`. Service Catalog assumes it to provision the blueprint release pipeline (`Product/bp-pipeline/bp-pipeline.yaml`). It can manage only resources whose names start with `SC-` (Service Catalog provisioned stacks), `BluePrint_` pipelines, and `/blueprints/*` parameters. |
+| `CleanupFunctionRole` | `lambda.amazonaws.com` | Removes the admin product and portfolio when the stack is deleted. |
+| `rTransformExecutionRole` | `lambda.amazonaws.com` | Runs the `ReplicateWith` CloudFormation macro. |
+| `CodePipelineServiceRole` | `codepipeline.amazonaws.com` | Runs `ServiceCatalog-Pipeline`. |
+
+Blueprint products are launched with the role set in `launch_contraint_role` in `bp_config.yml`. Create that role yourself, and grant it only the permissions that the blueprint's resources need. Set the `BlueprintLaunchRoleNamePattern` stack parameter to its name (default `ServiceCatalogLaunchConstraintRole*`) so the pipeline can attach it to products as a launch constraint.
+
+The person deploying `ServiceCatalog-Pipeline.yml` needs permissions to create the resources listed in [Dependencies](#dependencies), including IAM roles and policies. After deployment, day-to-day changes go through the config and blueprint repositories and don't require any IAM permissions.
+
+### Upgrading an existing deployment
+
+If you deployed an earlier version of this solution:
+
+* The `IamRoleName` parameter has been removed. After you update the stack, the pipeline uses the roles described above. You can delete the role that you created manually (default `codebuild-servicecatalog-admin-role`) once the pipeline has run successfully.
+* The existing launch constraint on `Bootstrapping-Admin-Product` still references the old role. In the Service Catalog console, open `Bootstrapping-Admin-Portfolio`, select **Constraints**, and edit the launch constraint so that it uses the `BootstrapLaunchRole` created by the stack.
+* The stack now creates the log groups `/aws/lambda/<stack-name>-replication-macro` and `/aws/lambda/<stack-name>-admin-product-portfolio-cleanup`. If either already exists, delete it before you update the stack.
+* The Lambda function and CodeBuild network interface permissions are scoped to resources in the stack's account and Region. If your subnets are shared with you from another account (VPC sharing), add that account's subnet ARNs to the `ManageFunctionNetworkInterfaces` and `ManageBuildNetworkInterfaces` statements.
+
 ### Cleanup
 
 * Remove all the Service Catalog products
@@ -76,6 +101,8 @@ git push origin main
 * Comment all portfolios in bp_config.yml
 * Commit and push to ServiceCatalog-ConfigRepo
 ```
+
+* Delete the `ServiceCatalog-Pipeline` CloudFormation stack. Do this last: the stack deletes `BootstrapLaunchRole`, and Service Catalog needs that role to terminate the blueprint release pipelines it provisioned.
 
 ## Authors
 
