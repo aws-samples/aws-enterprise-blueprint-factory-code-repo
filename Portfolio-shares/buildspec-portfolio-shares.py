@@ -34,9 +34,6 @@ config_file_dev_admin_json = {
       "provider_name": "AWS",
       "description": "Admin products portfolio",
       "portfolio_access_roles": [
-        "arn:aws:iam::831932040055:role/codebuild-servicecatalog-admin-role"
-      ],
-      "portfolio_access_roles": [
         "{}".format(os.getenv('ServiceCatalogAdminRole'))
       ],
       "stack_tags": {

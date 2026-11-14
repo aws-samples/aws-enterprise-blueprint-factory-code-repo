@@ -1,11 +1,9 @@
 import yaml
 import boto3
-import subprocess
 from botocore.exceptions import ClientError
 import logging
 import json
 import os
-import subprocess
 import time
 
 log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

@@ -1,11 +1,12 @@
 import yaml
 import boto3
-import subprocess
+import shutil
+# subprocess is used only to run the AWS CLI with a fixed argument list
+import subprocess  # nosec B404
 from botocore.exceptions import ClientError
 import logging
 import json
 import os
-import subprocess
 import time
 
 log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -13,7 +14,11 @@ logging.basicConfig(format = log_format, level = logging.INFO)
 logger = logging.getLogger()
 
 logger.info("Starting...")
-logger.info(os.environ)
+
+# Resolve the AWS CLI to an absolute path instead of relying on PATH lookup at call time
+AWS_CLI = shutil.which("aws")
+if AWS_CLI is None:
+    raise SystemExit("AWS CLI not found on PATH")
 
 exitcode = 0
 
@@ -79,9 +84,10 @@ for conf_product in conf_product_dev_admin_list:
     response_search_product = servicecatalog_client.search_products_as_admin(Filters={'FullTextSearch' : [ conf_product['name']]})
     if not response_search_product['ProductViewDetails']:
         # cloudformation package
-        subprocess.run(
+        # Fixed argument list without a shell; arguments come from the admin-controlled code repository.
+        subprocess.run(  # nosec B603
         [
-            "aws", "cloudformation", "package",
+            AWS_CLI, "cloudformation", "package",
             "--region", os.getenv("AWS_REGION"),
             "--template-file", "{}/Product/{}".format(os.getenv("CODEBUILD_SRC_DIR"),product_template),
             "--s3-bucket", os.getenv("ARTIFACT_BUCKET"),
@@ -141,7 +147,8 @@ for conf_product in conf_product_dev_admin_list:
                         PortfolioId=portfolio_id
                     )
                     if conf_product['name'] == 'Bootstrapping-Admin-Product':
-                        LocalRoleName = os.getenv("ServiceCatalogAdminRole")
+                        # Dedicated launch role created by ServiceCatalog-Pipeline.yml (BootstrapLaunchRole)
+                        LocalRoleName = os.getenv("ServiceCatalogLaunchRole")
                     else:
                         LocalRoleName = conf_product['launch_contraint_role']
 
@@ -182,11 +189,12 @@ for conf_product in conf_product_dev_admin_list:
             ssm_client.get_parameter(Name="{}/{}/{}/product-version-id".format(SSM_PRODUCT_PREFIX,conf_product['name'],tmp1_product_version),WithDecryption=True)['Parameter']['Value']
         except ssm_client.exceptions.ParameterNotFound:
             # cloudformation package
-            subprocess.run(
+            # Fixed argument list without a shell; arguments come from the admin-controlled code repository.
+            subprocess.run(  # nosec B603
             [
-                "aws", "cloudformation", "package",
+                AWS_CLI, "cloudformation", "package",
                 "--region", os.getenv("AWS_REGION"),
-                "--template-file", "{}/{}".format(os.getenv("CODEBUILD_SRC_DIR"),tmp1_product_template),
+                "--template-file", "{}/Product/{}".format(os.getenv("CODEBUILD_SRC_DIR"),tmp1_product_template),
                 "--s3-bucket", os.getenv("ARTIFACT_BUCKET"),
                 "--s3-prefix", "resource/{}/{}".format(conf_product['name'],tmp1_product_version),
                 "--output-template-file", "product-{}-{}.yml".format(conf_product['name'],tmp1_product_version)
@@ -205,7 +213,7 @@ for conf_product in conf_product_dev_admin_list:
                     'Name': tmp1_product_version,
                     'Description': tmp1_product_version_description,
                     'Info': {
-                        'LoadTemplateFromURL': 'https://{}.s3.amazonaws.com/product-{}-{}.yml'.format(os.getenv("ARTIFACT_BUCKET"),conf_product['name'],tmp1_product_version),
+                        'LoadTemplateFromURL': tmp1_LoadTemplateFromURL,
                     },
                     'Type': 'CLOUD_FORMATION_TEMPLATE'
                 }

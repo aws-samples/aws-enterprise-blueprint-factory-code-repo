@@ -33,7 +33,7 @@ Figure 2 shows the Blueprint release pipeline architecture.
 ![Blueprint release pipeline](/images/figure2.png "Figure 2")
 
 A single blueprint development follows GitOps flow, that means its developed and uploaded to a feature branch and a pull request is submitted for review. Once its reviewed and approved after peer review and cyber review process, its merged into a master branch. This will then trigger Blueprint release pipeline. 
-In the first stage, the template is checked for file alignment. The pipeline accepts both cloudformation and cdk formats. If the file is a cdk construct, it will be synthesised to a cloudformation template. Second stage will perform syntax check of the template using cfn-lint. In the next stage, pipeline performs various control checks with tools like cfn-nag and cloud conformity. The Cloud Conformity service is accessed via an API call, the credentials for which is stored in Secrets Manager. Once the reports are received from cloud conformity, it will be stored in a S3 bucket and it will be also shared to Blueprint Factory Admin team via SNS topic. In the next two stages, pipeline will deploy the new version of the product and it’ll also perform version control. When there is an update in the blueprint template and bump up in the version, pipeline version control stage will make older versions of the product inactive.
+In the first stage, the template is checked for file alignment. The pipeline accepts both cloudformation and cdk formats. If the file is a cdk construct, it will be synthesised to a cloudformation template. Second stage will perform syntax check of the template using cfn-lint. In the next stage, the pipeline runs cfn-nag to check the template against security rules; the stage fails if cfn-nag reports a failure. You can add other policy-as-code checks (for example, AWS CloudFormation Guard) as additional stages. In the next two stages, pipeline will deploy the new version of the product and it’ll also perform version control. When there is an update in the blueprint template and bump up in the version, pipeline version control stage will make older versions of the product inactive.
 
 ### Dependencies
 
@@ -63,6 +63,31 @@ git remote add origin git@github.com:ServiceCatalog-BlueprintProductRepo
 git push origin main
 ```
 
+### IAM roles
+
+`ServiceCatalog-Pipeline.yml` creates every IAM role the Blueprint Factory needs. You don't need to create a CodeBuild or Service Catalog admin role manually, and you don't need to edit any trust policies. Each role trusts only one AWS service, and only on behalf of the account the stack is deployed in (`aws:SourceAccount`):
+
+| Role | Trusted service | Purpose |
+|---|---|---|
+| `CodeBuildServiceRole` | `codebuild.amazonaws.com` | Runs the Portfolio, Portfolio-shares, Product, and Product-tenant scripts. It manages Service Catalog portfolios and products, reads and writes `/blueprints/*` SSM parameters, and can pass only the launch constraint roles to Service Catalog. |
+| `BootstrapLaunchRole` | `servicecatalog.amazonaws.com` | The launch constraint role for `Bootstrapping-Admin-Product`. Service Catalog assumes it to provision the blueprint release pipeline (`Product/bp-pipeline/bp-pipeline.yaml`). It can manage only resources whose names start with `SC-` (Service Catalog provisioned stacks), `BluePrint_` pipelines, and `/blueprints/*` parameters. |
+| `CleanupFunctionRole` | `lambda.amazonaws.com` | Removes the admin product and portfolio when the stack is deleted. |
+| `rTransformExecutionRole` | `lambda.amazonaws.com` | Runs the `ReplicateWith` CloudFormation macro. |
+| `CodePipelineServiceRole` | `codepipeline.amazonaws.com` | Runs `ServiceCatalog-Pipeline`. |
+
+Blueprint products are launched with the role set in `launch_contraint_role` in `bp_config.yml`. Create that role yourself, and grant it only the permissions that the blueprint's resources need. Set the `BlueprintLaunchRoleNamePattern` stack parameter to its name (default `ServiceCatalogLaunchConstraintRole*`) so the pipeline can attach it to products as a launch constraint.
+
+The person deploying `ServiceCatalog-Pipeline.yml` needs permissions to create the resources listed in [Dependencies](#dependencies), including IAM roles and policies. After deployment, day-to-day changes go through the config and blueprint repositories and don't require any IAM permissions.
+
+### Upgrading an existing deployment
+
+If you deployed an earlier version of this solution:
+
+* The `IamRoleName` parameter has been removed. After you update the stack, the pipeline uses the roles described above. You can delete the role that you created manually (default `codebuild-servicecatalog-admin-role`) once the pipeline has run successfully.
+* The existing launch constraint on `Bootstrapping-Admin-Product` still references the old role. In the Service Catalog console, open `Bootstrapping-Admin-Portfolio`, select **Constraints**, and edit the launch constraint so that it uses the `BootstrapLaunchRole` created by the stack.
+* The stack now creates the log groups `/aws/lambda/<stack-name>-replication-macro` and `/aws/lambda/<stack-name>-admin-product-portfolio-cleanup`. If either already exists, delete it before you update the stack.
+* The Lambda function and CodeBuild network interface permissions are scoped to resources in the stack's account and Region. If your subnets are shared with you from another account (VPC sharing), add that account's subnet ARNs to the `ManageFunctionNetworkInterfaces` and `ManageBuildNetworkInterfaces` statements.
+
 ### Cleanup
 
 * Remove all the Service Catalog products
@@ -76,6 +101,8 @@ git push origin main
 * Comment all portfolios in bp_config.yml
 * Commit and push to ServiceCatalog-ConfigRepo
 ```
+
+* Delete the `ServiceCatalog-Pipeline` CloudFormation stack. Do this last: the stack deletes `BootstrapLaunchRole`, and Service Catalog needs that role to terminate the blueprint release pipelines it provisioned.
 
 ## Authors
 
@@ -96,6 +123,10 @@ Cam Maxwell
 
 * 0.1
     * Initial Release
+
+## Disclaimer
+
+This is sample code, for non-production usage. It is provided as-is, without warranty of any kind. Review and test it, and work with your security and legal teams to meet your organization's security, regulatory, and compliance requirements, before you deploy it in a production environment. Deploying this solution creates AWS resources that incur charges in your AWS account.
 
 ## Security
 

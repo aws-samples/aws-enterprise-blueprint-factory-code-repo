@@ -77,6 +77,14 @@ Conditions:
 Resources:
   CodeBuildProjectLogGroup:
     Type: AWS::Logs::LogGroup
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_158
+            comment: Log data is encrypted at rest by CloudWatch Logs by default. Add KmsKeyId if your organization requires a customer managed key.
+      guard:
+        SuppressedRules:
+          - CLOUDWATCH_LOG_GROUP_ENCRYPTED
     Properties:
       RetentionInDays: 365
     UpdateReplacePolicy: Retain
@@ -92,7 +100,13 @@ Resources:
             Service: codebuild.amazonaws.com
         Version: '2012-10-17'
   CodePipelineServiceRole:
-      Type: AWS::IAM::Role  
+      Type: AWS::IAM::Role
+      Metadata:
+        guard:
+          SuppressedRules:
+            # Inline policy keeps the policy lifecycle bound to the role and avoids granting the
+            # Service Catalog launch role iam:CreatePolicy / iam:AttachRolePolicy.
+            - IAM_NO_INLINE_POLICY_CHECK
       Properties:
         Path: /
         AssumeRolePolicyDocument: 
@@ -262,6 +276,10 @@ Resources:
   BuildstepCfnLintCheck:
     Type: AWS::CodeBuild::Project
     DependsOn: CodeBuildProjectPolicy
+    Metadata:
+      guard:
+        SuppressedRules:
+          - CODEBUILD_ENCRYPTION_KEY_RULE  # build artifacts are encrypted with the AWS managed S3 key by default
     Properties:
       Artifacts: 
         Type: CODEPIPELINE
@@ -304,6 +322,10 @@ Resources:
   BuildstepCfnNagCheck:
     Type: AWS::CodeBuild::Project
     DependsOn: CodeBuildProjectPolicy
+    Metadata:
+      guard:
+        SuppressedRules:
+          - CODEBUILD_ENCRYPTION_KEY_RULE  # build artifacts are encrypted with the AWS managed S3 key by default
     Properties:
       Artifacts: 
         Type: CODEPIPELINE
@@ -311,7 +333,7 @@ Resources:
       Environment: 
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
-        Image: aws/codebuild/standard:5.0
+        Image: aws/codebuild/standard:7.0
         ImagePullCredentialsType: CODEBUILD
       Name: !Sub '${ProductName}-BuildstepCfnNagCheck-${AWS::StackName}'
       ServiceRole: !GetAtt CodeBuildProjectRole.Arn
@@ -321,6 +343,8 @@ Resources:
           version: 0.2
           phases:
             install:
+              runtime-versions:
+                ruby: 3.3
               commands:
                 - echo "Installing cfn-nag"
                 - pip install cfn-lint
@@ -349,6 +373,10 @@ Resources:
   BuildstepPackage:
     Type: AWS::CodeBuild::Project
     DependsOn: CodeBuildProjectPolicy
+    Metadata:
+      guard:
+        SuppressedRules:
+          - CODEBUILD_ENCRYPTION_KEY_RULE  # build artifacts are encrypted with the AWS managed S3 key by default
     Properties:
       Artifacts: 
         Type: CODEPIPELINE
@@ -356,7 +384,7 @@ Resources:
       Environment: 
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
-        Image: aws/codebuild/standard:5.0
+        Image: aws/codebuild/standard:7.0
         ImagePullCredentialsType: CODEBUILD
         EnvironmentVariables:
           - Name: ARTIFACT_BUCKET
@@ -431,6 +459,10 @@ Resources:
   BuildstepUpdateVersion:
     Type: AWS::CodeBuild::Project
     DependsOn: BuildstepPackage
+    Metadata:
+      guard:
+        SuppressedRules:
+          - CODEBUILD_ENCRYPTION_KEY_RULE  # build artifacts are encrypted with the AWS managed S3 key by default
     Properties:
       Artifacts: 
         Type: CODEPIPELINE
@@ -438,7 +470,7 @@ Resources:
       Environment: 
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
-        Image: aws/codebuild/standard:5.0
+        Image: aws/codebuild/standard:7.0
         ImagePullCredentialsType: CODEBUILD
         EnvironmentVariables:
           - Name: PRODUCT_ID
@@ -487,6 +519,10 @@ Resources:
   BuildstepCDKSynth:
     Type: AWS::CodeBuild::Project
     DependsOn: CodeBuildProjectPolicy
+    Metadata:
+      guard:
+        SuppressedRules:
+          - CODEBUILD_ENCRYPTION_KEY_RULE  # build artifacts are encrypted with the AWS managed S3 key by default
     Properties:
       Artifacts: 
         Type: CODEPIPELINE
@@ -494,7 +530,7 @@ Resources:
       Environment: 
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
-        Image: aws/codebuild/standard:5.0
+        Image: aws/codebuild/standard:7.0
         ImagePullCredentialsType: CODEBUILD
       Name: !Sub '${ProductName}-BuildstepCDKSynth'
       ServiceRole: !GetAtt CodeBuildProjectRole.Arn
